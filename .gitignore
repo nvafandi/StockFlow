@@ -1,0 +1,17 @@
+# Build output
+target/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+
+# Local overrides & logs
+.env
+*.log
+logs/
