@@ -170,7 +170,7 @@ stockflow-service/
 - outbox: penyimpanan event dan mekanisme publikasi.
 - common: komponen lintas domain, exception, dan response standar.
 
-Untuk implementasi Panache, repository dapat menggunakan PanacheRepository atau PanacheRepositoryBase, sementara application service bertanggung jawab atas transaksi bisnis.
+Untuk implementasi Panache, repository dapat menggunakan PanacheRepository atau PanacheRepositoryBase. Batas transaksi database berada di repository: satu method repository yang dianotasi @Transactional mewakili satu use case, sementara application service tidak membuka transaksi sendiri.
 
 ## 5. Database Design
 
@@ -418,7 +418,7 @@ ID pada contoh merupakan placeholder untuk ilustrasi kontrak API.
 
 - Validasi produk dan gudang.
 - Validasi jumlah harus lebih besar dari nol.
-- Mulai database transaction.
+- Panggil satu method repository yang transaksional; repository membuka database transaction.
 - Ambil atau buat record inventory secara aman.
 - Tambahkan jumlah stok.
 - Simpan inventory transaction.
@@ -429,7 +429,7 @@ ID pada contoh merupakan placeholder untuk ilustrasi kontrak API.
 
 - Validasi produk dan gudang.
 - Validasi jumlah harus lebih besar dari nol.
-- Mulai database transaction.
+- Panggil satu method repository yang transaksional; repository membuka database transaction.
 - Lock record inventory atau gunakan atomic conditional update.
 - Pastikan stok mencukupi.
 - Kurangi stok.
@@ -564,16 +564,19 @@ Pastikan extension test diletakkan pada scope yang tepat dan nama extension dive
 sequenceDiagram
 participant C as Client
 participant API as Quarkus API
+participant R as Repository
 participant DB as PostgreSQL
 participant OB as Outbox Publisher
 participant K as Kafka
 
 C->>API: POST stock-in
-API->>DB: Begin transaction
-API->>DB: Update inventory
-API->>DB: Insert inventory transaction
-API->>DB: Insert outbox event
-API->>DB: Commit transaction
+API->>R: applyStockIn(command)
+R->>DB: Begin transaction
+R->>DB: Update inventory
+R->>DB: Insert inventory transaction
+R->>DB: Insert outbox event
+R->>DB: Commit transaction
+R-->>API: StockMutationResult
 API-->>C: 201 Created
 OB->>DB: Read unpublished events
 OB->>K: Publish event
@@ -581,7 +584,7 @@ K-->>OB: Broker acknowledgment
 OB->>DB: Mark event as published
 ```
 
-Pembaruan inventory, penyimpanan histori, dan penulisan outbox harus berada dalam satu transaksi PostgreSQL.
+Pembaruan inventory, penyimpanan histori, dan penulisan outbox harus berada dalam satu transaksi PostgreSQL, yang dibuka oleh satu method repository ber-@Transactional.
 
 Publikasi ke Kafka berlangsung setelah transaksi database berhasil. Jika proses publikasi gagal, event tetap berada di outbox dan dapat dicoba kembali.
 

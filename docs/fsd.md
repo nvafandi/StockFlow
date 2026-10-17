@@ -347,47 +347,67 @@ sequenceDiagram
     participant C as Client
     participant A as REST API
     participant S as Application Service
+    participant R as StockMutationRepository
     participant D as PostgreSQL
     participant O as Outbox
 
     C->>A: POST /inventory/stock-in + Idempotency-Key
-    A->>S: validasi & delegasi
-    S->>D: BEGIN
-    S->>D: cek idempotency_key (existing?)
+    A->>S: validasi DTO & delegasi
+    S->>D: cek produk & gudang aktif (di luar transaksi)
+    S->>R: applyStockIn(command)
+    R->>D: BEGIN
+    R->>D: cek idempotency_key (existing?)
     alt key sudah ada
-        D-->>S: transaksi lama
-        S-->>C: 200 OK (hasil sama, tanpa mutasi baru)
+        R->>D: ROLLBACK (tanpa mutasi baru)
+        R-->>S: hasil transaksi lama
+        S-->>C: 200 OK (hasil sama)
     else key baru
-        S->>D: validasi produk & gudang
-        S->>D: upsert inventory (aman untuk konkurensi)
-        S->>D: UPDATE inventory SET quantity = quantity + :qty
-        S->>D: INSERT inventory_transactions (type=IN)
-        S->>O: INSERT outbox_events
-        S->>D: COMMIT
+        R->>D: upsert inventory (satu statement atomik)
+        R->>D: INSERT inventory_transactions (type=IN)
+        O->>D: INSERT outbox_events
+        R->>D: COMMIT
+        R-->>S: StockMutationResult
         S-->>C: 201 Created
     end
 ```
 
 **Langkah rinci:**
 
-1. Validasi DTO (`quantity > 0`, id wajib terisi).
-2. **Begin transaction.**
-3. Cek `idempotency_key` pada `inventory_transactions`.
-   - Jika ada → ambil transaksi tersebut, kembalikan hasil yang sama (`200 OK`).
-   - Jika tidak ada → lanjut.
-4. Validasi produk dan gudang ada dan aktif → `404` / `422` bila tidak.
-5. Dapatkan/ciptakan baris `inventory` untuk `(product_id, warehouse_id)`
-   menggunakan pola aman konkurensi (mis. `INSERT ... ON CONFLICT DO NOTHING`
-   lalu `SELECT`, atau `SELECT ... FOR UPDATE`).
-6. `quantity_before = inventory.quantity`.
-7. `UPDATE inventory SET quantity = quantity + :qty WHERE product_id = :p AND warehouse_id = :w RETURNING quantity`
-   → `quantity_after`. Jika baris terpengaruh = 0, perlakuan sebagai konflik konkurensi
-   dan ulangi langkah 5.
-8. `quantity_delta = +qty`.
-9. `INSERT inventory_transactions` dengan seluruh field audit dan `idempotency_key`.
-10. `INSERT outbox_events` (`eventType = StockInCompleted`, payload berisi
-    `quantityBefore/Changed/After` dan `transactionId`).
-11. **Commit.** Response dikembalikan setelah commit.
+1. Validasi DTO (`quantity > 0`, id wajib terisi) dan header `Idempotency-Key`
+   (wajib, ≤ 150 karakter) → `400` bila tidak valid.
+2. Application service memvalidasi produk dan gudang ada dan aktif → `404` / `422` bila tidak.
+   Validasi ini berjalan **sebelum** transaksi dibuka.
+3. Application service memanggil **satu method repository** `applyStockIn(command)`.
+   **Di sinilah transaksi database dibuka** (architecture-plan §4.3); application service
+   tidak memakai `@Transactional`.
+4. Di dalam transaksi: cek `idempotency_key` pada `inventory_transactions`.
+   - Ada dan payload identik (`payload_hash` sama) → kembalikan transaksi lama, `200 OK`,
+     tanpa mutasi baru.
+   - Ada dan payload berbeda → `409 IDEMPOTENCY_KEY_REUSED`.
+   - Tidak ada → lanjut.
+5. Upsert baris `inventory` untuk `(product_id, warehouse_id)` dengan **satu statement
+   atomik** sehingga aman terhadap request bersamaan:
+
+   ```sql
+   INSERT INTO inventory (id, product_id, warehouse_id, quantity, version, updated_at)
+   VALUES (:id, :productId, :warehouseId, :qty, 1, now())
+   ON CONFLICT (product_id, warehouse_id)
+   DO UPDATE SET quantity   = inventory.quantity + EXCLUDED.quantity,
+                 version    = inventory.version + 1,
+                 updated_at = now()
+   RETURNING id, quantity;
+   ```
+
+6. `quantity_after` = nilai `RETURNING`; `quantity_before = quantity_after - qty`
+   (dihitung dari hasil statement yang sama sehingga bebas balapan).
+7. `quantity_delta = +qty`.
+8. `INSERT inventory_transactions` dengan seluruh field audit, `idempotency_key`, dan
+   `payload_hash` (sha256 payload) — **satu transaksi** dengan langkah 5.
+9. `INSERT outbox_events` (`eventType = StockInCompleted`, payload berisi
+   `quantityBefore/Changed/After` dan `transactionId`) — **satu transaksi** dengan langkah 5 dan 8.
+10. **Commit.** Response dikembalikan setelah commit.
+11. Bila langkah 5, 8, atau 9 gagal → **rollback penuh**: tidak ada perubahan stok,
+    histori, maupun event yang tersimpan.
 
 **Response `201`:**
 
@@ -406,7 +426,9 @@ sequenceDiagram
 }
 ```
 
-**Error yang mungkin:** `400`, `404`, `409 CONCURRENCY_CONFLICT` (bila retry internal habis), `422`.
+**Error yang mungkin:** `400 VALIDATION_ERROR`, `404 PRODUCT_NOT_FOUND` /
+`WAREHOUSE_NOT_FOUND`, `409 IDEMPOTENCY_KEY_REUSED`, `409 CONCURRENCY_CONFLICT`,
+`422 BUSINESS_RULE_VIOLATION`.
 
 ---
 
@@ -424,9 +446,12 @@ sequenceDiagram
 
 **Alur (satu transaksi):**
 
-1. Validasi DTO dan idempotency (sama dengan FS-07 langkah 1–4).
-2. **Begin transaction.**
-3. **Atomic conditional update** (pendekatan utama):
+1. Validasi DTO dan idempotency (sama dengan FS-07 langkah 1–3); application service
+   memvalidasi produk dan gudang **sebelum** transaksi dibuka.
+2. Application service memanggil satu method repository `applyStockOut(command)`;
+   **transaksi database dibuka di situ** (architecture-plan §4.3).
+3. Di dalam transaksi: cek `idempotency_key` (sama dengan FS-07 langkah 4).
+4. **Atomic conditional update** (pendekatan utama):
 
 ```sql
 UPDATE inventory
@@ -439,13 +464,16 @@ UPDATE inventory
 RETURNING quantity;
 ```
 
-4. Jika jumlah baris terpengaruh = **0**, maka stok tidak mencukupi (atau baris belum ada):
-   - Rollback.
-   - Kembalikan `409 INSUFFICIENT_STOCK` dengan pesan yang menyebut produk, gudang,
-     dan jumlah tersedia (bila dapat dibaca tanpa mengunci).
-5. Jika berhasil: `quantity_after` = nilai `RETURNING`, `quantity_delta = -qty`.
-6. `INSERT inventory_transactions` bertipe `OUT`.
-7. `INSERT outbox_events` (`StockOutCompleted`).
+4. Jika jumlah baris terpengaruh = **0**, bedakan penyebabnya:
+   - Baris `inventory` untuk kombinasi tersebut belum ada → `404 INVENTORY_NOT_FOUND`.
+   - Baris ada tetapi `quantity < qty` → `409 INSUFFICIENT_STOCK`, pesannya menyebut
+     produk, gudang, dan jumlah yang diminta.
+   - Apa pun penyebabnya: **rollback** — tidak ada histori maupun event yang tersimpan.
+5. Jika berhasil: `quantity_after` = nilai `RETURNING`,
+   `quantity_before = quantity_after + qty`, `quantity_delta = -qty`.
+6. `INSERT inventory_transactions` bertipe `OUT` (menyertakan `idempotency_key` dan
+   `payload_hash`) — satu transaksi dengan langkah 4.
+7. `INSERT outbox_events` (`StockOutCompleted`) — satu transaksi dengan langkah 4 dan 6.
 8. **Commit.**
 
 > **Alternatif (pessimistic):** `SELECT ... FOR UPDATE` pada baris inventory,
@@ -900,6 +928,8 @@ Dikelola **Flyway** dengan skrip versioned. Struktur folder:
 | Kegagalan di tengah transaksi | Rollback penuh; tidak ada perubahan stok, histori, maupun outbox |
 | Konflik stok | Rollback; kembalikan `409` |
 | Kegagalan insert outbox | Rollback penuh — **mutasi stok juga dibatalkan** (atomisitas) |
+| Pemilik transaksi | Method repository ber-`@Transactional` (satu method = satu use case = satu transaksi); application service tidak membuka transaksi |
+| `flush()` di dalam boundary | Pelanggaran constraint terdeteksi di dalam transaksi dan dipetakan ke kode domain (mis. `DUPLICATE_SKU`, `IDEMPOTENCY_KEY_REUSED`), bukan `500` |
 
 ---
 

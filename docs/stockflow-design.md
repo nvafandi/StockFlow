@@ -100,11 +100,28 @@ flowchart LR
 
 | Jaminan | Diuji oleh |
 | --- | --- |
-| Stok tidak pernah negatif, termasuk pada request bersamaan | Integration test konkurensi (FSD §6.3) |
-| Request berulang tidak menggandakan mutasi stok | Unit + integration test idempotency (FSD §6.1) |
-| Perubahan stok, histori, dan outbox tersimpan atomik | Integration test transaksional (FSD §9.3) |
-| Event dapat dipublikasikan ulang bila gagal | Integration test retry publisher |
-| Migrasi database dapat dijalankan dari lingkungan baru | Flyway `migrate` pada database kosong |
+| Stok tidak pernah negatif, termasuk pada request bersamaan | `StockOutConcurrencyTest` (FSD §6.3) |
+| Request berulang tidak menggandakan mutasi stok | `StockMutationApiTest` + `PayloadHasherTest` (FSD §6.1) |
+| Perubahan stok, histori, dan outbox tersimpan atomik | `StockMutationAtomicityTest` (FSD §9.3) |
+| Event dapat dipublikasikan ulang bila gagal | Integration test retry publisher (Phase 4 — belum ada) |
+| Migrasi database dapat dijalankan dari lingkungan baru | Flyway `migrate` saat startup |
+
+### Status Implementasi
+
+Kode implementasi berada di root repository (bukan di `docs/`) dan dijalankan dengan
+Java 25+ serta Quarkus 3.40.
+
+| Fase | Status | Bukti |
+| --- | --- | --- |
+| Phase 1 — Foundation | Selesai | `pom.xml`, `compose.yaml`, migrasi Flyway V1–V5, `common/exception`, `common/response` |
+| Phase 2 — Master Data | Sebagian | `POST/GET /api/v1/products`, `POST/GET /api/v1/warehouses` |
+| Phase 3 — Inventory Core | Sebagian | Stock in, stock out, histori, idempotency, concurrency (`StockMutationRepository`) |
+| Phase 4 — Kafka Integration | Belum | — |
+| Phase 5 — Production Readiness | Belum | Health `q/health` dan metrik Prometheus sudah aktif |
+
+Batas transaksi database untuk mutasi stok ada di repository — lihat
+`architecture-plan.md` §4.3. Panduan menjalankan dan menguji ada di `README.md` pada
+root repository.
 
 ### Roadmap
 
@@ -336,7 +353,7 @@ stockflow-service/
 | Package | Tanggung Jawab |
 | --- | --- |
 | `api` | REST resources, request DTO, response DTO |
-| `application` | Use case dan orchestration; pemilik batas transaksi bisnis |
+| `application` | Use case dan orkestrasi; **tidak** membuka transaksi database sendiri |
 | `domain` | Domain model, business rules, domain services |
 | `infrastructure` | Implementasi repository dan integrasi persistence |
 | `messaging` | Kafka producer, consumer, event schema, konfigurasi messaging |
@@ -344,8 +361,8 @@ stockflow-service/
 | `common` | Komponen lintas domain, exception, response standar |
 
 > Untuk implementasi Panache, repository dapat menggunakan `PanacheRepository` atau
-> `PanacheRepositoryBase`, sementara **application service bertanggung jawab atas
-> transaksi bisnis**.
+> `PanacheRepositoryBase`. **Batas transaksi database berada di repository**, bukan di
+> application service (lihat §4.3).
 
 #### 4.2 Aturan Ketergantungan Antar-Modul
 
@@ -356,6 +373,66 @@ stockflow-service/
 | AD-3 | Akses antar-domain dilakukan melalui application service, bukan repository milik domain lain |
 | AD-4 | `messaging` dan `outbox` hanya boleh diakses dari `application`/`infrastructure` |
 | AD-5 | Entity JPA tidak boleh keluar dari batas modul (selalu dipetakan ke DTO) |
+
+#### 4.3 Batas Transaksi Database
+
+Transaksi database dibuka dan ditutup di **repository**, bukan di application service.
+Satu method repository merepresentasikan satu *use case transaction* yang menulis semua
+tabel terkait secara atomik.
+
+| ID | Aturan |
+| --- | --- |
+| TD-1 | Satu method repository = satu use case = **satu transaksi PostgreSQL** |
+| TD-2 | Method repository yang menulis dianotasi `@Transactional` dan memanggil `flush()` di dalam boundary, agar pelanggaran constraint terdeteksi di dalam transaksi dan dapat diterjemahkan menjadi exception domain |
+| TD-3 | Application service **tidak** memakai `@Transactional`; tugasnya hanya validasi, orkestrasi, dan delegasi |
+| TD-4 | Repository granular (mis. `InventoryRepository`, `OutboxEventRepository`) **tidak** membuka transaksi; ia berpartisipasi pada transaksi milik repository use case |
+| TD-5 | Seluruh penulisan satu use case (inventory, histori, outbox) harus berada pada method repository yang sama |
+
+Alasan pemilihan: atomisitas tetap terjaga tanpa menyebar anotasi transaksi ke lapisan
+yang tidak menyentuh database; boundary transaksi menjadi eksplisit dan mudah diuji
+(lihat `StockMutationAtomicityTest`); serta rollback otomatis membatalkan seluruh tulisan
+bila satu langkah gagal.
+
+```java
+// infrastructure — batas transaksi berada di sini
+@ApplicationScoped
+public class StockMutationRepository {
+
+    @Transactional
+    public StockMutationResult applyStockIn(StockMutationCommand command) {
+        // 1. Idempotency-Key diperiksa di dalam transaksi
+        Optional<StockMutationResult> previous = findReused(command);
+        if (previous.isPresent()) {
+            return previous.get();                    // tanpa mutasi baru (HTTP 200)
+        }
+
+        // 2. mutasi inventory: satu statement SQL atomik
+        InventoryMutation mutation = inventoryRepository.increaseQuantity(
+                command.productId(), command.warehouseId(), command.quantity());
+
+        // 3. histori + 4. event outbox, pada transaksi yang sama
+        return record(command, TransactionType.IN, mutation.inventoryId(),
+                mutation.quantityAfter() - command.quantity(), mutation.quantityAfter());
+    }
+}
+```
+
+```java
+// application — tanpa @Transactional
+@ApplicationScoped
+public class InventoryService {
+
+    public StockMutationResult stockIn(String idempotencyKey, StockInRequest request) {
+        String key = requireIdempotencyKey(idempotencyKey);
+        productService.ensureActive(request.productId());
+        warehouseService.ensureActive(request.warehouseId());
+
+        return stockMutationRepository.applyStockIn(
+                StockMutationCommand.of(request.productId(), request.warehouseId(),
+                        request.quantity(), request.referenceId(), key, request.notes()));
+    }
+}
+```
 
 ---
 
@@ -512,16 +589,19 @@ secara konsisten sehingga urutan per-partition terjaga.
 sequenceDiagram
     participant C as Client
     participant API as Quarkus API
+    participant R as StockMutationRepository
     participant DB as PostgreSQL
     participant OB as Outbox Publisher
     participant K as Kafka
 
     C->>API: POST stock-in
-    API->>DB: Begin transaction
-    API->>DB: Update inventory
-    API->>DB: Insert inventory transaction
-    API->>DB: Insert outbox event
-    API->>DB: Commit transaction
+    API->>R: applyStockIn(command)
+    R->>DB: BEGIN
+    R->>DB: INSERT/UPDATE inventory
+    R->>DB: INSERT inventory_transactions
+    R->>DB: INSERT outbox_events
+    R->>DB: COMMIT
+    R-->>API: StockMutationResult
     API-->>C: 201 Created
     OB->>DB: Read unpublished events
     OB->>K: Publish event
@@ -532,7 +612,8 @@ sequenceDiagram
 #### 7.2 Ketentuan Wajib
 
 1. Pembaruan inventory, penyimpanan histori, dan penulisan outbox harus berada
-   dalam **satu transaksi PostgreSQL**.
+   dalam **satu transaksi PostgreSQL**, yang dibuka oleh satu method repository
+   ber-`@Transactional` (§4.3).
 2. Publikasi ke Kafka berlangsung **setelah** transaksi database berhasil.
 3. Jika publikasi gagal, event tetap berada di outbox dan dapat dicoba kembali.
 4. Jika menggunakan beberapa publisher, tambahkan mekanisme **klaim event yang aman**
@@ -777,6 +858,17 @@ Gunakan PostgreSQL dan Kafka melalui **Testcontainers** untuk menguji:
 - Idempotensi consumer.
 - Kegagalan koneksi Kafka.
 
+**Sudah terimplementasi** (PostgreSQL nyata via Dev Services/Testcontainers):
+
+| Test | Yang dibuktikan |
+| --- | --- |
+| `StockMutationApiTest` | Kontrak FS-07/FS-08: status `201`/`200`/`400`/`404`/`409`, histori, dan event outbox |
+| `StockMutationAtomicityTest` | Kegagalan di tengah transaksi membatalkan stok, histori, dan outbox sekaligus |
+| `StockOutConcurrencyTest` | Dua stock-out bersamaan (stok 100, qty 60) → satu sukses, satu `409`, stok akhir 40 |
+| `PayloadHasherTest` | Hash payload stabil dan berubah bila isi request berubah |
+
+Belum terimplementasi: pengujian publisher dan consumer Kafka (Phase 4).
+
 #### 13.3 API Tests
 
 Uji status HTTP, request validation, response schema, pagination, dan error response.
@@ -802,6 +894,7 @@ dihindari** dirangkum berikut.
 | P-6 | Counter Micrometer dengan prefix aplikasi (mis. `stockflow.inventory.*`) | Observabilitas konsisten |
 | P-7 | Optimistic locking (`@Version`) + retry terbatas | Alternatif konkurensi yang aman |
 | P-8 | Relay event ke topic finalisasi terpisah dari publisher outbox | Memisahkan transport internal dari kontrak publik |
+| P-9 | Batas transaksi database di method repository (`@Transactional` pada repository use case) | Satu use case = satu transaksi; application service bebas dari detail persistence |
 
 #### 14.2 Pitfall yang Harus Dihindari
 
@@ -832,6 +925,7 @@ dihindari** dirangkum berikut.
 | ADR-06 | Conditional update untuk stock out | Menghindari overselling tanpa lock eksplisit | Perlu verifikasi `rows affected` dan pemetaan ke `409` |
 | ADR-07 | Flyway sebagai satu-satunya pengelola skema | Reproducible dari lingkungan baru | Migrasi tidak boleh diubah setelah dirilis |
 | ADR-08 | Key Kafka `{productId}:{warehouseId}` | Urutan per-partition untuk aggregate yang sama | Perlu konsistensi pada semua event inventory |
+| ADR-09 | Transaksi database dibuka di repository, bukan di application service | Menjaga atomisitas tetap eksplisit pada satu method use case dan mencegah anotasi transaksi tersebar di banyak lapisan | Application service dilarang `@Transactional`; repository granular dilarang membuka transaksi sendiri (§4.3) |
 
 ---
 
@@ -844,6 +938,11 @@ dihindari** dirangkum berikut.
 | Phase 3 | Inventory Core | Stock-in & stock-out; inventory transaction history; concurrency control; idempotency; stock adjustment |
 | Phase 4 | Kafka Integration | Definisi event schema; transactional outbox; publisher ke Kafka; consumer idempotent bila diperlukan; retry dan dead-letter handling |
 | Phase 5 | Production Readiness | Authentication & authorization; observability; integration testing; CI/CD; deployment dan backup strategy |
+
+> **Status implementasi saat ini:** Phase 1 (foundation, Flyway, exception handling,
+> unit test), sebagian Phase 2 (create/list/detail produk & gudang), dan sebagian Phase 3
+> (stock-in, stock-out, histori transaksi, idempotency, concurrency control) sudah ada
+> pada repository ini. Phase 4 (Kafka) dan sisa Phase 5 belum dikerjakan.
 
 #### 16.1 Prasyarat Keluar Tiap Fase
 
@@ -1960,47 +2059,67 @@ sequenceDiagram
     participant C as Client
     participant A as REST API
     participant S as Application Service
+    participant R as StockMutationRepository
     participant D as PostgreSQL
     participant O as Outbox
 
     C->>A: POST /inventory/stock-in + Idempotency-Key
-    A->>S: validasi & delegasi
-    S->>D: BEGIN
-    S->>D: cek idempotency_key (existing?)
+    A->>S: validasi DTO & delegasi
+    S->>D: cek produk & gudang aktif (di luar transaksi)
+    S->>R: applyStockIn(command)
+    R->>D: BEGIN
+    R->>D: cek idempotency_key (existing?)
     alt key sudah ada
-        D-->>S: transaksi lama
-        S-->>C: 200 OK (hasil sama, tanpa mutasi baru)
+        R->>D: ROLLBACK (tanpa mutasi baru)
+        R-->>S: hasil transaksi lama
+        S-->>C: 200 OK (hasil sama)
     else key baru
-        S->>D: validasi produk & gudang
-        S->>D: upsert inventory (aman untuk konkurensi)
-        S->>D: UPDATE inventory SET quantity = quantity + :qty
-        S->>D: INSERT inventory_transactions (type=IN)
-        S->>O: INSERT outbox_events
-        S->>D: COMMIT
+        R->>D: upsert inventory (satu statement atomik)
+        R->>D: INSERT inventory_transactions (type=IN)
+        O->>D: INSERT outbox_events
+        R->>D: COMMIT
+        R-->>S: StockMutationResult
         S-->>C: 201 Created
     end
 ```
 
 **Langkah rinci:**
 
-1. Validasi DTO (`quantity > 0`, id wajib terisi).
-2. **Begin transaction.**
-3. Cek `idempotency_key` pada `inventory_transactions`.
-   - Jika ada → ambil transaksi tersebut, kembalikan hasil yang sama (`200 OK`).
-   - Jika tidak ada → lanjut.
-4. Validasi produk dan gudang ada dan aktif → `404` / `422` bila tidak.
-5. Dapatkan/ciptakan baris `inventory` untuk `(product_id, warehouse_id)`
-   menggunakan pola aman konkurensi (mis. `INSERT ... ON CONFLICT DO NOTHING`
-   lalu `SELECT`, atau `SELECT ... FOR UPDATE`).
-6. `quantity_before = inventory.quantity`.
-7. `UPDATE inventory SET quantity = quantity + :qty WHERE product_id = :p AND warehouse_id = :w RETURNING quantity`
-   → `quantity_after`. Jika baris terpengaruh = 0, perlakuan sebagai konflik konkurensi
-   dan ulangi langkah 5.
-8. `quantity_delta = +qty`.
-9. `INSERT inventory_transactions` dengan seluruh field audit dan `idempotency_key`.
-10. `INSERT outbox_events` (`eventType = StockInCompleted`, payload berisi
-    `quantityBefore/Changed/After` dan `transactionId`).
-11. **Commit.** Response dikembalikan setelah commit.
+1. Validasi DTO (`quantity > 0`, id wajib terisi) dan header `Idempotency-Key`
+   (wajib, ≤ 150 karakter) → `400` bila tidak valid.
+2. Application service memvalidasi produk dan gudang ada dan aktif → `404` / `422` bila tidak.
+   Validasi ini berjalan **sebelum** transaksi dibuka.
+3. Application service memanggil **satu method repository** `applyStockIn(command)`.
+   **Di sinilah transaksi database dibuka** (architecture-plan §4.3); application service
+   tidak memakai `@Transactional`.
+4. Di dalam transaksi: cek `idempotency_key` pada `inventory_transactions`.
+   - Ada dan payload identik (`payload_hash` sama) → kembalikan transaksi lama, `200 OK`,
+     tanpa mutasi baru.
+   - Ada dan payload berbeda → `409 IDEMPOTENCY_KEY_REUSED`.
+   - Tidak ada → lanjut.
+5. Upsert baris `inventory` untuk `(product_id, warehouse_id)` dengan **satu statement
+   atomik** sehingga aman terhadap request bersamaan:
+
+   ```sql
+   INSERT INTO inventory (id, product_id, warehouse_id, quantity, version, updated_at)
+   VALUES (:id, :productId, :warehouseId, :qty, 1, now())
+   ON CONFLICT (product_id, warehouse_id)
+   DO UPDATE SET quantity   = inventory.quantity + EXCLUDED.quantity,
+                 version    = inventory.version + 1,
+                 updated_at = now()
+   RETURNING id, quantity;
+   ```
+
+6. `quantity_after` = nilai `RETURNING`; `quantity_before = quantity_after - qty`
+   (dihitung dari hasil statement yang sama sehingga bebas balapan).
+7. `quantity_delta = +qty`.
+8. `INSERT inventory_transactions` dengan seluruh field audit, `idempotency_key`, dan
+   `payload_hash` (sha256 payload) — **satu transaksi** dengan langkah 5.
+9. `INSERT outbox_events` (`eventType = StockInCompleted`, payload berisi
+   `quantityBefore/Changed/After` dan `transactionId`) — **satu transaksi** dengan langkah 5 dan 8.
+10. **Commit.** Response dikembalikan setelah commit.
+11. Bila langkah 5, 8, atau 9 gagal → **rollback penuh**: tidak ada perubahan stok,
+    histori, maupun event yang tersimpan.
 
 **Response `201`:**
 
@@ -2019,7 +2138,9 @@ sequenceDiagram
 }
 ```
 
-**Error yang mungkin:** `400`, `404`, `409 CONCURRENCY_CONFLICT` (bila retry internal habis), `422`.
+**Error yang mungkin:** `400 VALIDATION_ERROR`, `404 PRODUCT_NOT_FOUND` /
+`WAREHOUSE_NOT_FOUND`, `409 IDEMPOTENCY_KEY_REUSED`, `409 CONCURRENCY_CONFLICT`,
+`422 BUSINESS_RULE_VIOLATION`.
 
 ---
 
@@ -2037,9 +2158,12 @@ sequenceDiagram
 
 **Alur (satu transaksi):**
 
-1. Validasi DTO dan idempotency (sama dengan FS-07 langkah 1–4).
-2. **Begin transaction.**
-3. **Atomic conditional update** (pendekatan utama):
+1. Validasi DTO dan idempotency (sama dengan FS-07 langkah 1–3); application service
+   memvalidasi produk dan gudang **sebelum** transaksi dibuka.
+2. Application service memanggil satu method repository `applyStockOut(command)`;
+   **transaksi database dibuka di situ** (architecture-plan §4.3).
+3. Di dalam transaksi: cek `idempotency_key` (sama dengan FS-07 langkah 4).
+4. **Atomic conditional update** (pendekatan utama):
 
 ```sql
 UPDATE inventory
@@ -2052,13 +2176,16 @@ UPDATE inventory
 RETURNING quantity;
 ```
 
-4. Jika jumlah baris terpengaruh = **0**, maka stok tidak mencukupi (atau baris belum ada):
-   - Rollback.
-   - Kembalikan `409 INSUFFICIENT_STOCK` dengan pesan yang menyebut produk, gudang,
-     dan jumlah tersedia (bila dapat dibaca tanpa mengunci).
-5. Jika berhasil: `quantity_after` = nilai `RETURNING`, `quantity_delta = -qty`.
-6. `INSERT inventory_transactions` bertipe `OUT`.
-7. `INSERT outbox_events` (`StockOutCompleted`).
+4. Jika jumlah baris terpengaruh = **0**, bedakan penyebabnya:
+   - Baris `inventory` untuk kombinasi tersebut belum ada → `404 INVENTORY_NOT_FOUND`.
+   - Baris ada tetapi `quantity < qty` → `409 INSUFFICIENT_STOCK`, pesannya menyebut
+     produk, gudang, dan jumlah yang diminta.
+   - Apa pun penyebabnya: **rollback** — tidak ada histori maupun event yang tersimpan.
+5. Jika berhasil: `quantity_after` = nilai `RETURNING`,
+   `quantity_before = quantity_after + qty`, `quantity_delta = -qty`.
+6. `INSERT inventory_transactions` bertipe `OUT` (menyertakan `idempotency_key` dan
+   `payload_hash`) — satu transaksi dengan langkah 4.
+7. `INSERT outbox_events` (`StockOutCompleted`) — satu transaksi dengan langkah 4 dan 6.
 8. **Commit.**
 
 > **Alternatif (pessimistic):** `SELECT ... FOR UPDATE` pada baris inventory,
@@ -2513,6 +2640,8 @@ Dikelola **Flyway** dengan skrip versioned. Struktur folder:
 | Kegagalan di tengah transaksi | Rollback penuh; tidak ada perubahan stok, histori, maupun outbox |
 | Konflik stok | Rollback; kembalikan `409` |
 | Kegagalan insert outbox | Rollback penuh — **mutasi stok juga dibatalkan** (atomisitas) |
+| Pemilik transaksi | Method repository ber-`@Transactional` (satu method = satu use case = satu transaksi); application service tidak membuka transaksi |
+| `flush()` di dalam boundary | Pelanggaran constraint terdeteksi di dalam transaksi dan dipetakan ke kode domain (mis. `DUPLICATE_SKU`, `IDEMPOTENCY_KEY_REUSED`), bukan `500` |
 
 ---
 
@@ -2799,7 +2928,7 @@ stockflow-service/
 - outbox: penyimpanan event dan mekanisme publikasi.
 - common: komponen lintas domain, exception, dan response standar.
 
-Untuk implementasi Panache, repository dapat menggunakan PanacheRepository atau PanacheRepositoryBase, sementara application service bertanggung jawab atas transaksi bisnis.
+Untuk implementasi Panache, repository dapat menggunakan PanacheRepository atau PanacheRepositoryBase. Batas transaksi database berada di repository: satu method repository yang dianotasi @Transactional mewakili satu use case, sementara application service tidak membuka transaksi sendiri.
 
 ### 5. Database Design
 
@@ -3047,7 +3176,7 @@ ID pada contoh merupakan placeholder untuk ilustrasi kontrak API.
 
 - Validasi produk dan gudang.
 - Validasi jumlah harus lebih besar dari nol.
-- Mulai database transaction.
+- Panggil satu method repository yang transaksional; repository membuka database transaction.
 - Ambil atau buat record inventory secara aman.
 - Tambahkan jumlah stok.
 - Simpan inventory transaction.
@@ -3058,7 +3187,7 @@ ID pada contoh merupakan placeholder untuk ilustrasi kontrak API.
 
 - Validasi produk dan gudang.
 - Validasi jumlah harus lebih besar dari nol.
-- Mulai database transaction.
+- Panggil satu method repository yang transaksional; repository membuka database transaction.
 - Lock record inventory atau gunakan atomic conditional update.
 - Pastikan stok mencukupi.
 - Kurangi stok.
@@ -3193,16 +3322,19 @@ Pastikan extension test diletakkan pada scope yang tepat dan nama extension dive
 sequenceDiagram
 participant C as Client
 participant API as Quarkus API
+participant R as Repository
 participant DB as PostgreSQL
 participant OB as Outbox Publisher
 participant K as Kafka
 
 C->>API: POST stock-in
-API->>DB: Begin transaction
-API->>DB: Update inventory
-API->>DB: Insert inventory transaction
-API->>DB: Insert outbox event
-API->>DB: Commit transaction
+API->>R: applyStockIn(command)
+R->>DB: Begin transaction
+R->>DB: Update inventory
+R->>DB: Insert inventory transaction
+R->>DB: Insert outbox event
+R->>DB: Commit transaction
+R-->>API: StockMutationResult
 API-->>C: 201 Created
 OB->>DB: Read unpublished events
 OB->>K: Publish event
@@ -3210,7 +3342,7 @@ K-->>OB: Broker acknowledgment
 OB->>DB: Mark event as published
 ```
 
-Pembaruan inventory, penyimpanan histori, dan penulisan outbox harus berada dalam satu transaksi PostgreSQL.
+Pembaruan inventory, penyimpanan histori, dan penulisan outbox harus berada dalam satu transaksi PostgreSQL, yang dibuka oleh satu method repository ber-@Transactional.
 
 Publikasi ke Kafka berlangsung setelah transaksi database berhasil. Jika proses publikasi gagal, event tetap berada di outbox dan dapat dicoba kembali.
 

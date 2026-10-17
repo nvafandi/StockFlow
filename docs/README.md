@@ -42,11 +42,28 @@ flowchart LR
 
 | Jaminan | Diuji oleh |
 | --- | --- |
-| Stok tidak pernah negatif, termasuk pada request bersamaan | Integration test konkurensi (FSD §6.3) |
-| Request berulang tidak menggandakan mutasi stok | Unit + integration test idempotency (FSD §6.1) |
-| Perubahan stok, histori, dan outbox tersimpan atomik | Integration test transaksional (FSD §9.3) |
-| Event dapat dipublikasikan ulang bila gagal | Integration test retry publisher |
-| Migrasi database dapat dijalankan dari lingkungan baru | Flyway `migrate` pada database kosong |
+| Stok tidak pernah negatif, termasuk pada request bersamaan | `StockOutConcurrencyTest` (FSD §6.3) |
+| Request berulang tidak menggandakan mutasi stok | `StockMutationApiTest` + `PayloadHasherTest` (FSD §6.1) |
+| Perubahan stok, histori, dan outbox tersimpan atomik | `StockMutationAtomicityTest` (FSD §9.3) |
+| Event dapat dipublikasikan ulang bila gagal | Integration test retry publisher (Phase 4 — belum ada) |
+| Migrasi database dapat dijalankan dari lingkungan baru | Flyway `migrate` saat startup |
+
+## Status Implementasi
+
+Kode implementasi berada di root repository (bukan di `docs/`) dan dijalankan dengan
+Java 25+ serta Quarkus 3.40.
+
+| Fase | Status | Bukti |
+| --- | --- | --- |
+| Phase 1 — Foundation | Selesai | `pom.xml`, `compose.yaml`, migrasi Flyway V1–V5, `common/exception`, `common/response` |
+| Phase 2 — Master Data | Sebagian | `POST/GET /api/v1/products`, `POST/GET /api/v1/warehouses` |
+| Phase 3 — Inventory Core | Sebagian | Stock in, stock out, histori, idempotency, concurrency (`StockMutationRepository`) |
+| Phase 4 — Kafka Integration | Belum | — |
+| Phase 5 — Production Readiness | Belum | Health `q/health` dan metrik Prometheus sudah aktif |
+
+Batas transaksi database untuk mutasi stok ada di repository — lihat
+`architecture-plan.md` §4.3. Panduan menjalankan dan menguji ada di `README.md` pada
+root repository.
 
 ## Roadmap
 
