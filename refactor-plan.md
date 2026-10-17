@@ -209,7 +209,7 @@ bukan deviasi struktur.
 #### Phase 20 — Commit & PR (only if git accepted)
 - Goal: commit `refactor-plan.md`, `refactoring-report.md`, changes; push; **tanpa PR**.
 - Gate: user approvals given.
-- Status: [ ]
+- Status: [x] — disetujui user 2026-10-17 ("Commit + push, tanpa PR"). Commit `092f4f8` di branch `refactor/quarkus-standards`: **100 file, +3323/−1404** (termasuk rename yang terdeteksi Git: `StockMutationRepository`→`InventoryMutationService`, `common/response`→`common/api`+`common/exception`, 5 repository → interface + `impl/`). Push ke `origin` berhasil; **tidak ada PR dibuat** sesuai permintaan.
 
 ---
 
@@ -272,3 +272,4 @@ bukan deviasi struktur.
 | P17 | 2026-10-17 | Verifikasi 6 check: build, no-Spring, Quarkus, test (22/22), startup `/q/health` UP + `/q/openapi` 16 KB, standar manual 0/61 pelanggaran | 0 (verifikasi) | PASS |
 | P18 | 2026-10-17 | 16/16 check validasi PASS + SOLID 5/5; 2 temuan OCP diperbaiki (enum `eventType()`, tabel constraint); tree map before/after (substitusi manual) | 3 file utama | PASS (22/22 test) |
 | P19 | 2026-10-17 | `refactoring-report.md` disusun; plan tersilang-periksa tanpa `[ ]` tersisa | `refactoring-report.md` (baru) | n/a |
+| P20 | 2026-10-17 | Commit `092f4f8` (100 file, +3323/−1404) + push ke `origin/refactor/quarkus-standards`; **tanpa PR** | seluruh perubahan refactor | PASS |
