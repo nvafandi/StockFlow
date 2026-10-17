@@ -1,7 +1,9 @@
 package com.stockflow.common.exception;
 
-import com.stockflow.common.response.ErrorCode;
-
+/**
+ * Pelanggaran aturan bisnis yang bukan masalah bentuk request maupun duplikasi data
+ * (mis. produk atau gudang non-aktif) → HTTP 422.
+ */
 public class BusinessRuleViolationException extends BusinessException {
 
     public BusinessRuleViolationException(String message) {

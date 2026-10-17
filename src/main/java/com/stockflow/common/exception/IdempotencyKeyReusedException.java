@@ -1,7 +1,8 @@
 package com.stockflow.common.exception;
 
-import com.stockflow.common.response.ErrorCode;
-
+/**
+ * {@code Idempotency-Key} sudah dipakai untuk payload yang berbeda → HTTP 409 (FSD §6.1).
+ */
 public class IdempotencyKeyReusedException extends BusinessException {
 
     public IdempotencyKeyReusedException(String idempotencyKey) {

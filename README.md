@@ -86,14 +86,16 @@ curl -X POST http://localhost:8080/api/v1/inventory/stock-in \
 
 ## Desain Transaksi Database
 
-**Batas transaksi database berada di repository, bukan di application service.** Satu
-method repository mewakili satu use case dan menulis seluruh tabel terkait secara atomik
-(`inventory`, `inventory_transactions`, `outbox_events`). Application service hanya
-melakukan validasi dan orkestrasi.
+**Batas transaksi database berada di application service, bukan di repository.** Satu
+method service use case (`InventoryMutationService.applyStockIn`) mewakili satu transaksi dan
+menulis seluruh tabel terkait secara atomik (`inventory`, `inventory_transactions`,
+`outbox_events`). Orkestrator `InventoryService` tidak transaksional — pemisahan ini wajib agar
+pemulihan balapan `Idempotency-Key` dapat membaca hasil transaksi pemenang setelah transaksi
+yang gagal di-`rollback`.
 
 ```java
 @ApplicationScoped
-public class StockMutationRepository {
+public class InventoryMutationService {
 
     @Transactional   // ← batas transaksi database untuk seluruh use case stock in
     public StockMutationResult applyStockIn(StockMutationCommand command) {
@@ -114,11 +116,11 @@ ada di [`docs/architecture-plan.md`](docs/architecture-plan.md) §4.3 dan
 
 ```
 src/main/java/com/stockflow/
-├── common/       # response envelope, kode error, exception, exception mapper
-├── product/      # master data produk (api, application, domain, infrastructure)
-├── warehouse/    # master data gudang
-├── inventory/    # mutasi stok, histori, dan StockMutationRepository (batas transaksi)
-└── outbox/       # transactional outbox (domain + repository)
+├── common/       # api (envelope + trace id), constants, exception (DomainException, handler global)
+├── product/      # master data produk (api/rest, api/dto, service, repository, entity, mapper)
+├── warehouse/    # master data gudang (struktur sama dengan product)
+├── inventory/    # mutasi stok & histori (service transaksional, repository, entity, mapper, constants, util)
+└── outbox/       # transactional outbox (entity, repository, publisher di Phase 4)
 ```
 
 Aturan dependensi antar-modul ada di `docs/architecture-plan.md` §4.2.

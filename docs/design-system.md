@@ -110,38 +110,41 @@ Struktur package menggunakan pendekatan modular berdasarkan domain bisnis.
 ```text
 stockflow-service/
 ├── pom.xml
-├── Dockerfile
+├── mvnw / mvnw.cmd / .mvn/           # Maven wrapper
 ├── compose.yaml
 ├── README.md
-├── PROJECT_DESIGN.md
+├── refactor-plan.md
+├── docs/
 ├── src/
 │   ├── main/
 │   │   ├── java/com/stockflow/
 │   │   │   ├── common/
-│   │   │   │   ├── exception/
-│   │   │   │   ├── response/
-│   │   │   │   └── validation/
+│   │   │   │   ├── api/              # ApiResponse, PageResponse, ErrorResponse, TraceId
+│   │   │   │   ├── constants/        # CommonConstants
+│   │   │   │   └── exception/        # ErrorCode, DomainException, GlobalExceptionHandler
 │   │   │   ├── product/
-│   │   │   │   ├── api/
-│   │   │   │   ├── application/
-│   │   │   │   ├── domain/
-│   │   │   │   └── infrastructure/
-│   │   │   ├── warehouse/
-│   │   │   │   ├── api/
-│   │   │   │   ├── application/
-│   │   │   │   ├── domain/
-│   │   │   │   └── infrastructure/
+│   │   │   │   ├── api/rest/
+│   │   │   │   ├── api/dto/request/
+│   │   │   │   ├── api/dto/response/
+│   │   │   │   ├── service/
+│   │   │   │   ├── repository/ (+ impl/)
+│   │   │   │   ├── entity/
+│   │   │   │   └── mapper/
+│   │   │   ├── warehouse/            # struktur sama dengan product
 │   │   │   ├── inventory/
-│   │   │   │   ├── api/
-│   │   │   │   ├── application/
-│   │   │   │   ├── domain/
-│   │   │   │   └── infrastructure/
-│   │   │   ├── transaction/
-│   │   │   ├── messaging/
-│   │   │   │   ├── event/
-│   │   │   │   ├── publisher/
-│   │   │   │   └── consumer/
+│   │   │   │   ├── api/rest/
+│   │   │   │   ├── api/dto/request/
+│   │   │   │   ├── api/dto/response/
+│   │   │   │   ├── service/
+│   │   │   │   ├── repository/ (+ impl/)
+│   │   │   │   ├── entity/
+│   │   │   │   ├── mapper/
+│   │   │   │   ├── constants/
+│   │   │   │   └── util/
 │   │   │   └── outbox/
+│   │   │       ├── entity/
+│   │   │       ├── repository/ (+ impl/)
+│   │   │       └── service/          # publisher (Phase 4)
 │   │   └── resources/
 │   │       ├── application.properties
 │   │       └── db/migration/
@@ -152,25 +155,26 @@ stockflow-service/
 │   │           └── V5__create_outbox_events.sql
 │   └── test/
 │       └── java/com/stockflow/
-│           ├── product/
 │           ├── inventory/
-│           ├── transaction/
-│           └── messaging/
-└── deploy/
-└── docker/
+│           ├── inventory/util/
+│           └── support/
+└── target/                           # build output (di-ignore)
 ```
 
 ### Package Responsibilities
 
-- api: REST resources, request DTO, response DTO.
-- application: use cases dan orchestration.
-- domain: domain models, business rules, dan domain services.
-- infrastructure: repository implementations dan integrasi persistence.
-- messaging: Kafka producer, consumer, event schema, dan konfigurasi messaging.
+- api/rest: REST resources; selalu mengembalikan ApiResponse<T>; tanpa logika bisnis.
+- api/dto/request dan api/dto/response: DTO masuk/keluar dengan Bean Validation; tidak mereferensi entity.
+- service: use case, orkestrasi, validasi lintas domain, dan batas transaksi database.
+- repository: akses data murni (Panache), interface + impl, tanpa logika bisnis dan tanpa @Transactional.
+- entity: entity JPA beserta enum domain.
+- mapper: konversi DTO ↔ entity ↔ payload event; satu-satunya tempat pemetaan.
+- constants: nilai konstan domain dan literal query.
+- util: utilitas murni tanpa state.
 - outbox: penyimpanan event dan mekanisme publikasi.
-- common: komponen lintas domain, exception, dan response standar.
+- common: wrapper response, model error, exception dasar, handler global, dan konstanta bersama.
 
-Untuk implementasi Panache, repository dapat menggunakan PanacheRepository atau PanacheRepositoryBase. Batas transaksi database berada di repository: satu method repository yang dianotasi @Transactional mewakili satu use case, sementara application service tidak membuka transaksi sendiri.
+Untuk implementasi Panache, repository dapat menggunakan PanacheRepository atau PanacheRepositoryBase. Batas transaksi database berada di application service: satu method service use case yang dianotasi @Transactional mewakili satu transaksi, dan repository hanya berpartisipasi di dalamnya (lihat architecture-plan.md §4.3).
 
 ## 5. Database Design
 
@@ -564,19 +568,22 @@ Pastikan extension test diletakkan pada scope yang tepat dan nama extension dive
 sequenceDiagram
 participant C as Client
 participant API as Quarkus API
-participant R as Repository
+participant S as InventoryService (orkestrator)
+participant M as InventoryMutationService
 participant DB as PostgreSQL
 participant OB as Outbox Publisher
 participant K as Kafka
 
 C->>API: POST stock-in
-API->>R: applyStockIn(command)
-R->>DB: Begin transaction
-R->>DB: Update inventory
-R->>DB: Insert inventory transaction
-R->>DB: Insert outbox event
-R->>DB: Commit transaction
-R-->>API: StockMutationResult
+API->>S: stockIn(Idempotency-Key, request)
+S->>M: applyStockIn(command)
+M->>DB: Begin transaction
+M->>DB: Update inventory
+M->>DB: Insert inventory transaction
+M->>DB: Insert outbox event
+M->>DB: Commit transaction
+M-->>S: StockMutationResult
+S-->>API: StockMutationResult
 API-->>C: 201 Created
 OB->>DB: Read unpublished events
 OB->>K: Publish event
@@ -584,7 +591,7 @@ K-->>OB: Broker acknowledgment
 OB->>DB: Mark event as published
 ```
 
-Pembaruan inventory, penyimpanan histori, dan penulisan outbox harus berada dalam satu transaksi PostgreSQL, yang dibuka oleh satu method repository ber-@Transactional.
+Pembaruan inventory, penyimpanan histori, dan penulisan outbox harus berada dalam satu transaksi PostgreSQL, yang dibuka oleh satu method service use case ber-@Transactional (InventoryMutationService), bukan oleh repository. Orkestrator InventoryService tidak transaksional agar penanganan balapan Idempotency-Key dapat membaca hasil transaksi pemenang setelah transaksi yang gagal di-rollback.
 
 Publikasi ke Kafka berlangsung setelah transaksi database berhasil. Jika proses publikasi gagal, event tetap berada di outbox dan dapat dicoba kembali.
 

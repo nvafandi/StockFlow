@@ -1,9 +1,10 @@
 package com.stockflow.common.exception;
 
-import com.stockflow.common.response.ErrorCode;
-
 import java.util.UUID;
 
+/**
+ * Posisi stok untuk kombinasi produk dan gudang tidak ditemukan → HTTP 404 (FSD FS-09).
+ */
 public class InventoryNotFoundException extends BusinessException {
 
     public InventoryNotFoundException(UUID productId, UUID warehouseId) {

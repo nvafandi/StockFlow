@@ -44,6 +44,7 @@ flowchart LR
 | --- | --- |
 | Stok tidak pernah negatif, termasuk pada request bersamaan | `StockOutConcurrencyTest` (FSD §6.3) |
 | Request berulang tidak menggandakan mutasi stok | `StockMutationApiTest` + `PayloadHasherTest` (FSD §6.1) |
+| Balapan `Idempotency-Key` tidak menjadi `500` (pemulihan di luar transaksi yang gagal) | `InventoryServiceTest` (unit) + `StockMutationApiTest` |
 | Perubahan stok, histori, dan outbox tersimpan atomik | `StockMutationAtomicityTest` (FSD §9.3) |
 | Event dapat dipublikasikan ulang bila gagal | Integration test retry publisher (Phase 4 — belum ada) |
 | Migrasi database dapat dijalankan dari lingkungan baru | Flyway `migrate` saat startup |
@@ -55,15 +56,15 @@ Java 25+ serta Quarkus 3.40.
 
 | Fase | Status | Bukti |
 | --- | --- | --- |
-| Phase 1 — Foundation | Selesai | `pom.xml`, `compose.yaml`, migrasi Flyway V1–V5, `common/exception`, `common/response` |
-| Phase 2 — Master Data | Sebagian | `POST/GET /api/v1/products`, `POST/GET /api/v1/warehouses` |
-| Phase 3 — Inventory Core | Sebagian | Stock in, stock out, histori, idempotency, concurrency (`StockMutationRepository`) |
+| Phase 1 — Foundation | Selesai | `pom.xml`, `mvnw`, `compose.yaml`, migrasi Flyway V1–V5, `common/api`, `common/constants`, `common/exception` |
+| Phase 2 — Master Data | Sebagian | `POST/GET /api/v1/products`, `POST/GET /api/v1/warehouses` (+ unit test `ProductServiceTest`) |
+| Phase 3 — Inventory Core | Sebagian | Stock in, stock out, histori, idempotency, concurrency (`InventoryMutationService`); 22 test hijau |
 | Phase 4 — Kafka Integration | Belum | — |
 | Phase 5 — Production Readiness | Belum | Health `q/health` dan metrik Prometheus sudah aktif |
 
-Batas transaksi database untuk mutasi stok ada di repository — lihat
-`architecture-plan.md` §4.3. Panduan menjalankan dan menguji ada di `README.md` pada
-root repository.
+Kode mengikuti standar `refactor-project`: layered `common` + `{domain}/{api,service,repository,entity,mapper,...}`
+dengan batas transaksi database di application service (`InventoryMutationService`) — lihat
+`architecture-plan.md` §4.3. Panduan menjalankan dan menguji ada di `README.md` pada root repository.
 
 ## Roadmap
 

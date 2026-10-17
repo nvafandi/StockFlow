@@ -1,9 +1,10 @@
 package com.stockflow.common.exception;
 
-import com.stockflow.common.response.ErrorCode;
-
 import java.util.UUID;
 
+/**
+ * Produk tidak ditemukan berdasarkan {@code id} → HTTP 404 (FSD FS-03).
+ */
 public class ProductNotFoundException extends BusinessException {
 
     public ProductNotFoundException(UUID productId) {

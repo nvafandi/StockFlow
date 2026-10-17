@@ -27,7 +27,7 @@
 | §8 | Aturan validasi |
 | §9 | Pemetaan error & exception handling |
 | §10 | Konfigurasi runtime |
-| §11 | Referensi implementasi dari `policy-processing-service` |
+| §11 | Referensi implementasi dari layanan Quarkus internal |
 
 ---
 
@@ -346,27 +346,27 @@ sequenceDiagram
     autonumber
     participant C as Client
     participant A as REST API
-    participant S as Application Service
-    participant R as StockMutationRepository
+    participant S as InventoryService (orkestrator)
+    participant M as InventoryMutationService
     participant D as PostgreSQL
     participant O as Outbox
 
     C->>A: POST /inventory/stock-in + Idempotency-Key
     A->>S: validasi DTO & delegasi
     S->>D: cek produk & gudang aktif (di luar transaksi)
-    S->>R: applyStockIn(command)
-    R->>D: BEGIN
-    R->>D: cek idempotency_key (existing?)
+    S->>M: applyStockIn(command)
+    M->>D: BEGIN
+    M->>D: cek idempotency_key (existing?)
     alt key sudah ada
-        R->>D: ROLLBACK (tanpa mutasi baru)
-        R-->>S: hasil transaksi lama
+        M->>D: ROLLBACK (tanpa mutasi baru)
+        M-->>S: hasil transaksi lama
         S-->>C: 200 OK (hasil sama)
     else key baru
-        R->>D: upsert inventory (satu statement atomik)
-        R->>D: INSERT inventory_transactions (type=IN)
+        M->>D: upsert inventory (satu statement atomik)
+        M->>D: INSERT inventory_transactions (type=IN)
         O->>D: INSERT outbox_events
-        R->>D: COMMIT
-        R-->>S: StockMutationResult
+        M->>D: COMMIT
+        M-->>S: StockMutationResult
         S-->>C: 201 Created
     end
 ```
@@ -375,11 +375,11 @@ sequenceDiagram
 
 1. Validasi DTO (`quantity > 0`, id wajib terisi) dan header `Idempotency-Key`
    (wajib, ≤ 150 karakter) → `400` bila tidak valid.
-2. Application service memvalidasi produk dan gudang ada dan aktif → `404` / `422` bila tidak.
+2. Orkestrator memvalidasi produk dan gudang ada dan aktif → `404` / `422` bila tidak.
    Validasi ini berjalan **sebelum** transaksi dibuka.
-3. Application service memanggil **satu method repository** `applyStockIn(command)`.
-   **Di sinilah transaksi database dibuka** (architecture-plan §4.3); application service
-   tidak memakai `@Transactional`.
+3. Orkestrator memanggil **satu method service use case** `applyStockIn(command)` pada
+   `InventoryMutationService`. **Di sinilah transaksi database dibuka** (architecture-plan §4.3);
+   `InventoryService` sebagai orkestrator tidak memakai `@Transactional`.
 4. Di dalam transaksi: cek `idempotency_key` pada `inventory_transactions`.
    - Ada dan payload identik (`payload_hash` sama) → kembalikan transaksi lama, `200 OK`,
      tanpa mutasi baru.
@@ -446,7 +446,7 @@ sequenceDiagram
 
 **Alur (satu transaksi):**
 
-1. Validasi DTO dan idempotency (sama dengan FS-07 langkah 1–3); application service
+1. Validasi DTO dan idempotency (sama dengan FS-07 langkah 1–3); orkestrator
    memvalidasi produk dan gudang **sebelum** transaksi dibuka.
 2. Application service memanggil satu method repository `applyStockOut(command)`;
    **transaksi database dibuka di situ** (architecture-plan §4.3).
@@ -928,7 +928,7 @@ Dikelola **Flyway** dengan skrip versioned. Struktur folder:
 | Kegagalan di tengah transaksi | Rollback penuh; tidak ada perubahan stok, histori, maupun outbox |
 | Konflik stok | Rollback; kembalikan `409` |
 | Kegagalan insert outbox | Rollback penuh — **mutasi stok juga dibatalkan** (atomisitas) |
-| Pemilik transaksi | Method repository ber-`@Transactional` (satu method = satu use case = satu transaksi); application service tidak membuka transaksi |
+| Pemilik transaksi | Method service use case ber-`@Transactional` (`InventoryMutationService`; satu method = satu use case = satu transaksi); orkestrator `InventoryService` tidak membuka transaksi |
 | `flush()` di dalam boundary | Pelanggaran constraint terdeteksi di dalam transaksi dan dipetakan ke kode domain (mis. `DUPLICATE_SKU`, `IDEMPOTENCY_KEY_REUSED`), bukan `500` |
 
 ---
@@ -979,9 +979,9 @@ Aplikasi dijalankan dengan `./mvnw quarkus:dev`.
 
 ---
 
-## 11. Referensi Implementasi dari `policy-processing-service`
+## 11. Referensi Implementasi dari Layanan Quarkus Internal
 
-Pola nyata dari layanan Quarkus lain di lingkungan yang sama, dipakai sebagai acuan
+Pola nyata dari layanan Quarkus internal lain di lingkungan yang sama, dipakai sebagai acuan
 implementasi sekaligus daftar hal yang harus dihindari.
 
 | ID | Acuan / Pitfall | Implikasi untuk StockFlow |

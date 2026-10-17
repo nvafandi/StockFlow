@@ -1,7 +1,8 @@
 package com.stockflow.common.exception;
 
-import com.stockflow.common.response.ErrorCode;
-
+/**
+ * SKU produk sudah dipakai (unique constraint {@code uk_products_sku}) → HTTP 409.
+ */
 public class DuplicateSkuException extends BusinessException {
 
     public DuplicateSkuException(String sku) {

@@ -1,13 +1,13 @@
 package com.stockflow.inventory;
 
 import com.stockflow.common.exception.InsufficientStockException;
-import com.stockflow.inventory.api.dto.StockInRequest;
-import com.stockflow.inventory.api.dto.StockOutRequest;
-import com.stockflow.inventory.application.InventoryService;
-import com.stockflow.inventory.domain.StockMutationResult;
-import com.stockflow.inventory.infrastructure.InventoryRepository;
-import com.stockflow.inventory.infrastructure.InventoryTransactionRepository;
-import com.stockflow.outbox.infrastructure.OutboxEventRepository;
+import com.stockflow.inventory.api.dto.request.StockInRequest;
+import com.stockflow.inventory.api.dto.request.StockOutRequest;
+import com.stockflow.inventory.service.InventoryService;
+import com.stockflow.inventory.service.StockMutationOutcome;
+import com.stockflow.inventory.repository.InventoryRepository;
+import com.stockflow.inventory.repository.InventoryTransactionRepository;
+import com.stockflow.outbox.repository.OutboxEventRepository;
 import com.stockflow.support.MasterData;
 import io.quarkus.arc.Arc;
 import io.quarkus.arc.ManagedContext;
@@ -71,7 +71,7 @@ class StockOutConcurrencyTest {
             ManagedContext requestContext = Arc.container().requestContext();
             requestContext.activate();
             try {
-                StockMutationResult result = inventoryService.stockOut(UUID.randomUUID().toString(),
+                StockMutationOutcome result = inventoryService.stockOut(UUID.randomUUID().toString(),
                         new StockOutRequest(productId, warehouseId, 60, "SO-2026-0001", null));
                 successCounter.incrementAndGet();
                 return result;
@@ -101,7 +101,7 @@ class StockOutConcurrencyTest {
         }
 
         assertEquals(40L, inventoryRepository.findByProductAndWarehouse(productId, warehouseId)
-                .orElseThrow().quantity, "stok akhir harus 40, bukan -20");
+                .orElseThrow().getQuantity(), "stok akhir harus 40, bukan -20");
         assertEquals(transactionsBefore + 1, inventoryTransactionRepository.count());
         assertEquals(outboxBefore + 1, outboxEventRepository.count());
     }

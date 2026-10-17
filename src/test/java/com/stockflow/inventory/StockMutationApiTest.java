@@ -3,9 +3,9 @@ package com.stockflow.inventory;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.stockflow.inventory.infrastructure.InventoryRepository;
-import com.stockflow.inventory.infrastructure.InventoryTransactionRepository;
-import com.stockflow.outbox.infrastructure.OutboxEventRepository;
+import com.stockflow.inventory.repository.InventoryRepository;
+import com.stockflow.inventory.repository.InventoryTransactionRepository;
+import com.stockflow.outbox.repository.OutboxEventRepository;
 import com.stockflow.support.MasterData;
 import io.quarkus.test.junit.QuarkusTest;
 import org.junit.jupiter.api.DisplayName;
@@ -64,26 +64,26 @@ class StockMutationApiTest {
                 .body("data.quantityAfter", is(100));
 
         var inventory = inventoryRepository.findByProductAndWarehouse(productId, warehouseId).orElseThrow();
-        assertEquals(100L, inventory.quantity);
+        assertEquals(100L, inventory.getQuantity());
 
         var transaction = inventoryTransactionRepository.findByIdempotencyKey(idempotencyKey).orElseThrow();
-        assertEquals(0L, transaction.quantityBefore);
-        assertEquals(100L, transaction.quantityAfter);
-        assertEquals("IN", transaction.transactionType.name());
+        assertEquals(0L, transaction.getQuantityBefore());
+        assertEquals(100L, transaction.getQuantityAfter());
+        assertEquals("IN", transaction.getTransactionType().name());
 
-        var event = outboxEventRepository.find("aggregateId", inventory.id).firstResult();
-        assertEquals("StockInCompleted", event.eventType);
+        var event = outboxEventRepository.find("aggregateId", inventory.getId()).firstResult();
+        assertEquals("StockInCompleted", event.getEventType());
 
-        var payload = readTree(event.payload);
+        var payload = readTree(event.getPayload());
         assertEquals("StockInCompleted", payload.get("eventType").asText());
-        assertEquals(inventory.id.toString(), payload.get("aggregateId").asText());
+        assertEquals(inventory.getId().toString(), payload.get("aggregateId").asText());
         assertEquals(0, payload.get("quantityBefore").asInt());
         assertEquals(100, payload.get("quantityChanged").asInt());
         assertEquals(100, payload.get("quantityAfter").asInt());
-        assertEquals(transaction.id.toString(), payload.get("transactionId").asText());
+        assertEquals(transaction.getId().toString(), payload.get("transactionId").asText());
 
-        assertEquals(1, inventoryRepository.count("id", inventory.id));
-        assertEquals(1, inventoryTransactionRepository.count("id", transaction.id));
+        assertEquals(1, inventoryRepository.count("id", inventory.getId()));
+        assertEquals(1, inventoryTransactionRepository.count("id", transaction.getId()));
     }
 
     @Test
@@ -120,7 +120,7 @@ class StockMutationApiTest {
 
         assertEquals(firstTransactionId, secondTransactionId);
         assertEquals(25L, inventoryRepository.findByProductAndWarehouse(productId, warehouseId)
-                .orElseThrow().quantity);
+                .orElseThrow().getQuantity());
         assertEquals(1L, inventoryTransactionRepository.count("idempotencyKey", idempotencyKey));
     }
 
@@ -152,7 +152,7 @@ class StockMutationApiTest {
                 .body("error.code", is("IDEMPOTENCY_KEY_REUSED"));
 
         assertEquals(10L, inventoryRepository.findByProductAndWarehouse(productId, warehouseId)
-                .orElseThrow().quantity);
+                .orElseThrow().getQuantity());
     }
 
     @Test
@@ -185,7 +185,7 @@ class StockMutationApiTest {
                 .body("error.code", is("INSUFFICIENT_STOCK"));
 
         assertEquals(10L, inventoryRepository.findByProductAndWarehouse(productId, warehouseId)
-                .orElseThrow().quantity);
+                .orElseThrow().getQuantity());
         assertEquals(transactionsBefore, inventoryTransactionRepository.count());
         assertEquals(outboxBefore, outboxEventRepository.count());
     }

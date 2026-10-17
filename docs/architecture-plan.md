@@ -2,8 +2,8 @@
 
 > Turunan resmi dari `docs/design-system.md` (*StockFlow — Inventory Management Backend
 > System*). Dokumen ini memformalkan arsitektur StockFlow, sedangkan pola implementasi
-> yang sudah terbukti diambil dari layanan sejenis `policy-processing-service`
-> (Quarkus + Kafka + Transactional Outbox) dan ditandai eksplisit pada §15.
+> yang sudah terbukti diambil dari layanan Quarkus internal lain (Kafka + Transactional
+> Outbox) dan ditandai eksplisit pada §14.
 
 | Item | Keterangan |
 | --- | --- |
@@ -151,38 +151,48 @@ Struktur package menggunakan pendekatan **modular berdasarkan domain bisnis**.
 ```
 stockflow-service/
 ├── pom.xml
-├── Dockerfile
+├── mvnw                              # Maven wrapper (mvnw.cmd untuk Windows)
+├── .mvn/wrapper/maven-wrapper.properties
 ├── compose.yaml
 ├── README.md
-├── PROJECT_DESIGN.md
+├── refactor-plan.md                  # rencana & catatan refactor (skill refactor-project)
+├── .gitignore
+├── docs/
 ├── src/
 │   ├── main/
 │   │   ├── java/com/stockflow/
-│   │   │   ├── common/
-│   │   │   │   ├── exception/
-│   │   │   │   ├── response/
-│   │   │   │   └── validation/
+│   │   │   ├── common/                        # pseudo-function: komponen lintas domain
+│   │   │   │   ├── api/                       # ApiResponse, PageResponse, ErrorResponse, TraceId
+│   │   │   │   ├── constants/                 # CommonConstants
+│   │   │   │   └── exception/                 # ErrorCode, DomainException, GlobalExceptionHandler
 │   │   │   ├── product/
-│   │   │   │   ├── api/
-│   │   │   │   ├── application/
-│   │   │   │   ├── domain/
-│   │   │   │   └── infrastructure/
-│   │   │   ├── warehouse/
-│   │   │   │   ├── api/
-│   │   │   │   ├── application/
-│   │   │   │   ├── domain/
-│   │   │   │   └── infrastructure/
+│   │   │   │   ├── api/rest/                  # ProductResource
+│   │   │   │   ├── api/dto/request/           # CreateProductRequest
+│   │   │   │   ├── api/dto/response/          # ProductResponse
+│   │   │   │   ├── service/                   # ProductService (batas transaksi)
+│   │   │   │   ├── repository/                # ProductRepository + impl/
+│   │   │   │   ├── entity/                    # Product
+│   │   │   │   └── mapper/                    # ProductMapper
+│   │   │   ├── warehouse/                     # struktur sama dengan product
 │   │   │   ├── inventory/
-│   │   │   │   ├── api/
-│   │   │   │   ├── application/
-│   │   │   │   ├── domain/
-│   │   │   │   └── infrastructure/
-│   │   │   ├── transaction/
-│   │   │   ├── messaging/
-│   │   │   │   ├── event/
-│   │   │   │   ├── publisher/
-│   │   │   │   └── consumer/
+│   │   │   │   ├── api/rest/                  # InventoryResource
+│   │   │   │   ├── api/dto/request/           # StockInRequest, StockOutRequest
+│   │   │   │   ├── api/dto/response/          # StockMutationResponse, InventoryResponse,
+│   │   │   │   │                              #   InventoryTransactionResponse
+│   │   │   │   ├── service/                   # InventoryService (orkestrator),
+│   │   │   │   │                              #   InventoryMutationService (batas transaksi),
+│   │   │   │   │                              #   StockMutationCommand, StockMutationResult,
+│   │   │   │   │                              #   StockMutationOutcome
+│   │   │   │   ├── repository/                # InventoryRepository, InventoryTransactionRepository,
+│   │   │   │   │                              #   InventoryMutation + impl/
+│   │   │   │   ├── entity/                    # Inventory, InventoryTransaction, TransactionType
+│   │   │   │   ├── mapper/                    # InventoryMapper, StockEventPayloadMapper
+│   │   │   │   ├── constants/                 # InventoryConstants, InventoryQueryConstants
+│   │   │   │   └── util/                      # PayloadHasher
 │   │   │   └── outbox/
+│   │   │       ├── entity/                    # OutboxEvent
+│   │   │       ├── repository/                # OutboxEventRepository + impl/
+│   │   │       └── service/                   # publisher (Phase 4)
 │   │   └── resources/
 │   │       ├── application.properties
 │   │       └── db/migration/
@@ -193,63 +203,74 @@ stockflow-service/
 │   │           └── V5__create_outbox_events.sql
 │   └── test/
 │       └── java/com/stockflow/
-│           ├── product/
-│           ├── inventory/
-│           ├── transaction/
-│           └── messaging/
-└── deploy/
-└── docker/
+│           ├── inventory/                     # StockMutationApiTest, StockMutationAtomicityTest,
+│           │                                  #   StockOutConcurrencyTest
+│           ├── inventory/util/                # PayloadHasherTest
+│           └── support/                       # MasterData
+└── target/                                    # build output (di-ignore)
 ```
+
+Struktur ini mengikuti standar `refactor-project`:
+`com.stockflow.{function}.{layer}` dengan `{function}` ∈ {`product`, `warehouse`, `inventory`,
+`outbox`} dan `common` sebagai pseudo-function untuk komponen lintas domain. Setiap fungsi hanya
+memiliki direktori layer yang benar-benar berisi kode.
 
 ### 4.1 Package Responsibilities
 
 | Package | Tanggung Jawab |
 | --- | --- |
-| `api` | REST resources, request DTO, response DTO |
-| `application` | Use case dan orkestrasi; **tidak** membuka transaksi database sendiri |
-| `domain` | Domain model, business rules, domain services |
-| `infrastructure` | Implementasi repository dan integrasi persistence |
-| `messaging` | Kafka producer, consumer, event schema, konfigurasi messaging |
-| `outbox` | Penyimpanan event dan mekanisme publikasi |
-| `common` | Komponen lintas domain, exception, response standar |
-
-> Untuk implementasi Panache, repository dapat menggunakan `PanacheRepository` atau
-> `PanacheRepositoryBase`. **Batas transaksi database berada di repository**, bukan di
-> application service (lihat §4.3).
+| `api/rest` | REST resource; selalu mengembalikan `ApiResponse<T>` (via `RestResponse` bila status dinamis); tidak memuat logika bisnis |
+| `api/dto/request` \| `api/dto/response` | DTO masuk/keluar dengan Bean Validation; **tidak pernah** mereferensi entity atau kelas domain |
+| `service` | Use case, orkestrasi, validasi lintas domain, **dan batas transaksi database** |
+| `repository` | Akses data murni (Panache). Interface + `impl/` sesuai Dependency Inversion; tanpa logika bisnis dan tanpa `@Transactional` |
+| `entity` | Entity JPA beserta enum domainnya (`TransactionType`) |
+| `mapper` | Konversi DTO ↔ entity ↔ payload event; satu-satunya tempat pemetaan |
+| `constants` | Nilai konstan domain dan literal query (`{Domain}Constants`, `{Domain}QueryConstants`) |
+| `util` | Utilitas murni tanpa state (`PayloadHasher`) |
+| `outbox` | Penyimpanan event dan (Phase 4) mekanisme publikasi |
+| `common` | Wrapper response, model error, exception dasar, handler global, konstanta bersama |
 
 ### 4.2 Aturan Ketergantungan Antar-Modul
 
 | Aturan | Penjelasan |
 | --- | --- |
-| AD-1 | `api` → `application` → `domain` (satu arah) |
-| AD-2 | `domain` tidak boleh bergantung pada `api` maupun `infrastructure` |
+| AD-1 | `api` → `service` → `repository`/`mapper` → `entity` (satu arah, tidak ada lompatan layer) |
+| AD-2 | `entity` tidak boleh bergantung pada `api` maupun `repository` |
 | AD-3 | Akses antar-domain dilakukan melalui application service, bukan repository milik domain lain |
-| AD-4 | `messaging` dan `outbox` hanya boleh diakses dari `application`/`infrastructure` |
-| AD-5 | Entity JPA tidak boleh keluar dari batas modul (selalu dipetakan ke DTO) |
+| AD-4 | `outbox` hanya boleh diakses dari `service`/`repository` |
+| AD-5 | Entity JPA tidak boleh keluar dari batas modul (selalu dipetakan ke DTO lewat `mapper`) |
+| AD-6 | DTO tidak boleh berisi logika pemetaan; konversi hanya di `mapper` |
+| AD-7 | Repository selalu berupa interface; service cukup satu kelas (tanpa `ServiceImpl`) |
 
 ### 4.3 Batas Transaksi Database
 
-Transaksi database dibuka dan ditutup di **repository**, bukan di application service.
-Satu method repository merepresentasikan satu *use case transaction* yang menulis semua
-tabel terkait secara atomik.
+Transaksi database dibuka dan ditutup di **application service**, bukan di repository.
+Satu method service yang mewakili use case menulis semua tabel terkait secara atomik.
 
 | ID | Aturan |
 | --- | --- |
-| TD-1 | Satu method repository = satu use case = **satu transaksi PostgreSQL** |
-| TD-2 | Method repository yang menulis dianotasi `@Transactional` dan memanggil `flush()` di dalam boundary, agar pelanggaran constraint terdeteksi di dalam transaksi dan dapat diterjemahkan menjadi exception domain |
-| TD-3 | Application service **tidak** memakai `@Transactional`; tugasnya hanya validasi, orkestrasi, dan delegasi |
-| TD-4 | Repository granular (mis. `InventoryRepository`, `OutboxEventRepository`) **tidak** membuka transaksi; ia berpartisipasi pada transaksi milik repository use case |
-| TD-5 | Seluruh penulisan satu use case (inventory, histori, outbox) harus berada pada method repository yang sama |
+| TD-1 | Satu method service use case = **satu transaksi PostgreSQL** |
+| TD-2 | Method service yang menulis dianotasi `@Transactional` dan memanggil `flush()` di dalam boundary, agar pelanggaran constraint terdeteksi di dalam transaksi dan dapat diterjemahkan menjadi exception domain |
+| TD-3 | Repository **tidak** memakai `@Transactional` dan tidak memuat logika bisnis; ia berpartisipasi pada transaksi milik service |
+| TD-4 | Seluruh penulisan satu use case (inventory, histori, outbox) harus berada pada method service yang sama |
+| TD-5 | Penanganan kegagalan yang memerlukan query lanjutan (mis. balapan `Idempotency-Key`) harus berada **di luar** transaksi yang gagal, karena transaksi tersebut sudah *rollback-only* |
 
-Alasan pemilihan: atomisitas tetap terjaga tanpa menyebar anotasi transaksi ke lapisan
-yang tidak menyentuh database; boundary transaksi menjadi eksplisit dan mudah diuji
-(lihat `StockMutationAtomicityTest`); serta rollback otomatis membatalkan seluruh tulisan
-bila satu langkah gagal.
+Konsekuensi TD-5: orkestrasi dipisahkan menjadi dua bean pada layer `service`:
+
+* `InventoryService` — orkestrator, **tanpa** `@Transactional`: validasi header & referensi
+  lintas domain, lalu delegasi dan penanganan balapan.
+* `InventoryMutationService` — pemegang transaksi use case: pemeriksaan `Idempotency-Key`,
+  mutasi `inventory`, penulisan histori, dan penulisan outbox dalam satu transaksi.
+
+Alasan pemilihan: sejalan dengan standar `refactor-project` (§4 Service Standards), atomisitas
+tetap terjaga, boundary transaksi tetap eksplisit dan mudah diuji
+(`StockMutationAtomicityTest`), serta recovery balapan tetap mungkin karena kegagalan `flush()`
+tidak lagi di-`catch` di dalam transaksi yang sama.
 
 ```java
-// infrastructure — batas transaksi berada di sini
+// service — batas transaksi berada di sini (bean khusus use case)
 @ApplicationScoped
-public class StockMutationRepository {
+public class InventoryMutationService {
 
     @Transactional
     public StockMutationResult applyStockIn(StockMutationCommand command) {
@@ -271,21 +292,25 @@ public class StockMutationRepository {
 ```
 
 ```java
-// application — tanpa @Transactional
+// service — orkestrator, tanpa @Transactional
 @ApplicationScoped
 public class InventoryService {
 
     public StockMutationResult stockIn(String idempotencyKey, StockInRequest request) {
         String key = requireIdempotencyKey(idempotencyKey);
-        productService.ensureActive(request.productId());
-        warehouseService.ensureActive(request.warehouseId());
+        requireActiveReferences(request.productId(), request.warehouseId());
 
-        return stockMutationRepository.applyStockIn(
-                StockMutationCommand.of(request.productId(), request.warehouseId(),
-                        request.quantity(), request.referenceId(), key, request.notes()));
+        StockMutationCommand command = StockMutationCommand.of(request.productId(), request.warehouseId(),
+                request.quantity(), request.referenceId(), key, request.notes());
+
+        // penanganan balapan berada di luar transaksi (TD-5)
+        return execute(command, inventoryMutationService::applyStockIn);
     }
 }
 ```
+
+> `jakarta.transaction.Transactional` tidak menyediakan atribut `readOnly` (berbeda dari
+> anotasi Spring), sehingga operasi baca pada service memakai `@Transactional` biasa.
 
 ---
 
@@ -442,19 +467,21 @@ secara konsisten sehingga urutan per-partition terjaga.
 sequenceDiagram
     participant C as Client
     participant API as Quarkus API
-    participant R as StockMutationRepository
+    participant S as InventoryService (orkestrator)
+    participant M as InventoryMutationService
     participant DB as PostgreSQL
     participant OB as Outbox Publisher
     participant K as Kafka
 
     C->>API: POST stock-in
-    API->>R: applyStockIn(command)
-    R->>DB: BEGIN
-    R->>DB: INSERT/UPDATE inventory
-    R->>DB: INSERT inventory_transactions
-    R->>DB: INSERT outbox_events
-    R->>DB: COMMIT
-    R-->>API: StockMutationResult
+    API->>S: stockIn(Idempotency-Key, request)
+    S->>M: applyStockIn(command)
+    M->>DB: BEGIN
+    M->>DB: INSERT/UPDATE inventory
+    M->>DB: INSERT inventory_transactions
+    M->>DB: INSERT outbox_events
+    M->>DB: COMMIT
+    M-->>S: StockMutationResult
     API-->>C: 201 Created
     OB->>DB: Read unpublished events
     OB->>K: Publish event
@@ -719,6 +746,8 @@ Gunakan PostgreSQL dan Kafka melalui **Testcontainers** untuk menguji:
 | `StockMutationAtomicityTest` | Kegagalan di tengah transaksi membatalkan stok, histori, dan outbox sekaligus |
 | `StockOutConcurrencyTest` | Dua stock-out bersamaan (stok 100, qty 60) → satu sukses, satu `409`, stok akhir 40 |
 | `PayloadHasherTest` | Hash payload stabil dan berubah bila isi request berubah |
+| `ProductServiceTest` (unit, repository di-mock) | SKU duplikat ditolak sebelum menyentuh database; hasil `create` berupa DTO |
+| `InventoryServiceTest` (unit, dependensi di-mock) | Urutan validasi header sebelum transaksi; pemulihan balapan `Idempotency-Key` (R1) di luar transaksi yang gagal |
 
 Belum terimplementasi: pengujian publisher dan consumer Kafka (Phase 4).
 
@@ -728,12 +757,12 @@ Uji status HTTP, request validation, response schema, pagination, dan error resp
 
 ---
 
-## 14. Referensi Implementasi dari `policy-processing-service`
+## 14. Referensi Implementasi dari Layanan Quarkus Internal
 
-`policy-processing-service` adalah layanan Quarkus lain yang sudah menerapkan pola
-serupa (Kafka command/event, Transactional Outbox, scheduled publisher, DLQ, health
-check, metrik). Pola yang **terbukti berhasil dipakai** dan **pitfall yang harus
-dihindari** dirangkum berikut.
+Layanan Quarkus internal lain di lingkungan yang sama sudah menerapkan pola serupa
+(Kafka command/event, Transactional Outbox, scheduled publisher, DLQ, health check,
+metrik). Pola yang **terbukti berhasil dipakai** dan **pitfall yang harus dihindari**
+dirangkum berikut.
 
 ### 14.1 Pola yang Diadopsi
 
@@ -747,7 +776,7 @@ dihindari** dirangkum berikut.
 | P-6 | Counter Micrometer dengan prefix aplikasi (mis. `stockflow.inventory.*`) | Observabilitas konsisten |
 | P-7 | Optimistic locking (`@Version`) + retry terbatas | Alternatif konkurensi yang aman |
 | P-8 | Relay event ke topic finalisasi terpisah dari publisher outbox | Memisahkan transport internal dari kontrak publik |
-| P-9 | Batas transaksi database di method repository (`@Transactional` pada repository use case) | Satu use case = satu transaksi; application service bebas dari detail persistence |
+| P-9 | Batas transaksi database di method service use case (`@Transactional` pada `InventoryMutationService`) | Satu use case = satu transaksi; repository bebas `@Transactional` dan bebas logika bisnis |
 
 ### 14.2 Pitfall yang Harus Dihindari
 
@@ -778,7 +807,7 @@ dihindari** dirangkum berikut.
 | ADR-06 | Conditional update untuk stock out | Menghindari overselling tanpa lock eksplisit | Perlu verifikasi `rows affected` dan pemetaan ke `409` |
 | ADR-07 | Flyway sebagai satu-satunya pengelola skema | Reproducible dari lingkungan baru | Migrasi tidak boleh diubah setelah dirilis |
 | ADR-08 | Key Kafka `{productId}:{warehouseId}` | Urutan per-partition untuk aggregate yang sama | Perlu konsistensi pada semua event inventory |
-| ADR-09 | Transaksi database dibuka di repository, bukan di application service | Menjaga atomisitas tetap eksplisit pada satu method use case dan mencegah anotasi transaksi tersebar di banyak lapisan | Application service dilarang `@Transactional`; repository granular dilarang membuka transaksi sendiri (§4.3) |
+| ADR-09 | Transaksi database dibuka di application service, bukan di repository (**revisi 2026-10-17**, sebelumnya sebaliknya) | Menyelaraskan dengan standar `refactor-project`: service adalah pemilik use case sekaligus batas transaksi, repository murni akses data | Repository dilarang `@Transactional` dan dilarang memuat logika bisnis; penanganan kegagalan yang butuh query lanjutan harus di luar transaksi (`InventoryService` non-transaksional + `InventoryMutationService` transaksional, §4.3) |
 
 ---
 

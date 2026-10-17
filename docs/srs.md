@@ -647,11 +647,11 @@ Skema kolom lengkap ada pada `fsd.md` §7.
 | FR-INV-06 | `/inventory/transfers` | Phase 3+ |
 | FR-INV-07 | `/inventory/transactions` | Phase 3 |
 | FR-EVT-01 | modul `outbox` | Phase 4 |
-| FR-EVT-02 | modul `messaging/publisher` + scheduled job | Phase 4 |
+| FR-EVT-02 | modul `outbox/service` (publisher) + scheduled job | Phase 4 |
 | FR-EVT-03 | retry & dead-letter | Phase 4 |
 | FR-MON-01, FR-MON-02 | `quarkus-smallrye-health`, `quarkus-micrometer` | Phase 5 |
 | FR-X-01 | kolom `idempotency_key` + unique constraint | Phase 3 |
-| FR-X-02 | `common/response` + exception handler | Phase 1 |
+| FR-X-02 | `common/api` + `common/exception` (GlobalExceptionHandler) | Phase 1 |
 | FR-X-03 | `inventory_transactions` | Phase 3 |
 
 ---

@@ -1,10 +1,10 @@
 package com.stockflow.inventory;
 
-import com.stockflow.inventory.domain.StockMutationCommand;
-import com.stockflow.inventory.infrastructure.InventoryRepository;
-import com.stockflow.inventory.infrastructure.InventoryTransactionRepository;
-import com.stockflow.inventory.infrastructure.StockMutationRepository;
-import com.stockflow.outbox.infrastructure.OutboxEventRepository;
+import com.stockflow.inventory.service.StockMutationCommand;
+import com.stockflow.inventory.repository.InventoryRepository;
+import com.stockflow.inventory.repository.InventoryTransactionRepository;
+import com.stockflow.inventory.service.InventoryMutationService;
+import com.stockflow.outbox.repository.OutboxEventRepository;
 import com.stockflow.support.MasterData;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
@@ -17,15 +17,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
- * Membuktikan atomisitas transaksi yang dibuka repository: kegagalan pada penulisan
- * histori (langkah setelah perubahan stok) harus membatalkan perubahan stok sekaligus
- * membatalkan penulisan event outbox.
+ * Membuktikan atomisitas transaksi yang dibuka application service
+ * ({@code InventoryMutationService}): kegagalan pada penulisan histori (langkah setelah
+ * perubahan stok) harus membatalkan perubahan stok sekaligus membatalkan penulisan event outbox.
  */
 @QuarkusTest
 class StockMutationAtomicityTest {
 
     @Inject
-    StockMutationRepository stockMutationRepository;
+    InventoryMutationService inventoryMutationService;
 
     @Inject
     InventoryRepository inventoryRepository;
@@ -42,11 +42,11 @@ class StockMutationAtomicityTest {
         UUID productId = MasterData.createProduct();
         UUID warehouseId = MasterData.createWarehouse();
 
-        stockMutationRepository.applyStockIn(StockMutationCommand.of(
+        inventoryMutationService.applyStockIn(StockMutationCommand.of(
                 productId, warehouseId, 10, "SEED", UUID.randomUUID().toString(), null));
 
         assertEquals(10L, inventoryRepository.findByProductAndWarehouse(productId, warehouseId)
-                .orElseThrow().quantity);
+                .orElseThrow().getQuantity());
 
         long transactionsBefore = inventoryTransactionRepository.count();
         long outboxBefore = outboxEventRepository.count();
@@ -55,10 +55,10 @@ class StockMutationAtomicityTest {
         StockMutationCommand invalid = StockMutationCommand.of(
                 productId, warehouseId, 50, "X".repeat(150), UUID.randomUUID().toString(), null);
 
-        assertThrows(RuntimeException.class, () -> stockMutationRepository.applyStockIn(invalid));
+        assertThrows(RuntimeException.class, () -> inventoryMutationService.applyStockIn(invalid));
 
         assertEquals(10L, inventoryRepository.findByProductAndWarehouse(productId, warehouseId)
-                .orElseThrow().quantity, "perubahan stok harus di-rollback");
+                .orElseThrow().getQuantity(), "perubahan stok harus di-rollback");
         assertEquals(transactionsBefore, inventoryTransactionRepository.count(), "histori tidak boleh bertambah");
         assertEquals(outboxBefore, outboxEventRepository.count(), "event outbox tidak boleh bertambah");
     }

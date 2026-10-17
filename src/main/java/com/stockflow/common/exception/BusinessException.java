@@ -1,28 +1,19 @@
 package com.stockflow.common.exception;
 
-import com.stockflow.common.response.ErrorCode;
-
 /**
- * Basis seluruh exception domain.
+ * Exception domain generik untuk kondisi yang tidak punya tipe khusus
+ * (mis. validasi header wajib pada {@code InventoryService}).
  *
- * <p>Selalu mengembalikan {@link ErrorCode} sehingga satu exception mapper global dapat
+ * <p>Selalu mengembalikan {@link ErrorCode} sehingga {@link GlobalExceptionHandler} dapat
  * memetakannya ke HTTP status dan body error standar.
  */
-public class BusinessException extends RuntimeException {
-
-    private final ErrorCode errorCode;
+public class BusinessException extends DomainException {
 
     public BusinessException(ErrorCode errorCode, String message) {
-        super(message);
-        this.errorCode = errorCode;
+        super(errorCode, message);
     }
 
     public BusinessException(ErrorCode errorCode, String message, Throwable cause) {
-        super(message, cause);
-        this.errorCode = errorCode;
-    }
-
-    public ErrorCode errorCode() {
-        return errorCode;
+        super(errorCode, message, cause);
     }
 }

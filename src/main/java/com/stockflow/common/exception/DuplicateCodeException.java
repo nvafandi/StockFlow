@@ -1,7 +1,8 @@
 package com.stockflow.common.exception;
 
-import com.stockflow.common.response.ErrorCode;
-
+/**
+ * Kode gudang sudah dipakai (unique constraint {@code uk_warehouses_code}) → HTTP 409.
+ */
 public class DuplicateCodeException extends BusinessException {
 
     public DuplicateCodeException(String code) {

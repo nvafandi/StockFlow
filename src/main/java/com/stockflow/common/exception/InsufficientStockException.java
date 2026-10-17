@@ -1,9 +1,10 @@
 package com.stockflow.common.exception;
 
-import com.stockflow.common.response.ErrorCode;
-
 import java.util.UUID;
 
+/**
+ * Stok tidak mencukupi untuk permintaan stock out → HTTP 409 (FSD FS-08).
+ */
 public class InsufficientStockException extends BusinessException {
 
     public InsufficientStockException(UUID productId, UUID warehouseId, long requested) {

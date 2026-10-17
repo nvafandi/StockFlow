@@ -1,7 +1,11 @@
 package com.stockflow.common.exception;
 
-import com.stockflow.common.response.ErrorCode;
-
+/**
+ * Konflik konkurensi: request harus diulang.
+ *
+ * <p>Dipakai bila balapan {@code Idempotency-Key} terjadi tetapi transaksi pemenang tidak
+ * dapat ditemukan, sehingga hasilnya tidak boleh dikarang (FSD §6.1).
+ */
 public class ConcurrencyConflictException extends BusinessException {
 
     public ConcurrencyConflictException(String detail) {
