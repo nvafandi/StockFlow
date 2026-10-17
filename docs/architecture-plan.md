@@ -58,7 +58,7 @@ diimplementasikan bertahap — lihat §17).
 
 | Teknologi | Fungsi |
 | --- | --- |
-| Java 21+ | Bahasa pemrograman |
+| Java 25+ | Bahasa pemrograman |
 | Quarkus | Backend framework |
 | RESTEasy Reactive / Quarkus REST | REST API |
 | Hibernate ORM with Panache | ORM dan akses database |

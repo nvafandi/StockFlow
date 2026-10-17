@@ -97,7 +97,7 @@ dan melalui Kafka untuk menerima notifikasi perubahan stok.
 
 | ID | Batasan |
 | --- | --- |
-| C-01 | Java 21+ dan Quarkus (versi sesuai BOM yang dipilih) |
+| C-01 | Java 25+ dan Quarkus (versi sesuai BOM yang dipilih) |
 | C-02 | Database wajib PostgreSQL |
 | C-03 | Skema database dikelola Flyway; Hibernate memakai strategi `validate` |
 | C-04 | API memakai DTO; entity tidak diekspos |

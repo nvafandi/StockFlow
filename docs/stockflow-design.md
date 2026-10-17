@@ -7,7 +7,7 @@
 | --- | --- |
 | Sistem | StockFlow (`com.stockflow:stockflow-service`) |
 | Jenis | Backend inventory management (REST API + event-driven) |
-| Teknologi | Java 21+, Quarkus, PostgreSQL, Apache Kafka, Flyway |
+| Teknologi | Java 25+, Quarkus, PostgreSQL, Apache Kafka, Flyway |
 | Bahasa dokumen | Indonesia |
 | Dibuat | 2026-10-17 |
 
@@ -188,7 +188,7 @@ diimplementasikan bertahap — lihat §17).
 
 | Teknologi | Fungsi |
 | --- | --- |
-| Java 21+ | Bahasa pemrograman |
+| Java 25+ | Bahasa pemrograman |
 | Quarkus | Backend framework |
 | RESTEasy Reactive / Quarkus REST | REST API |
 | Hibernate ORM with Panache | ORM dan akses database |
@@ -1027,7 +1027,7 @@ dan melalui Kafka untuk menerima notifikasi perubahan stok.
 
 | ID | Batasan |
 | --- | --- |
-| C-01 | Java 21+ dan Quarkus (versi sesuai BOM yang dipilih) |
+| C-01 | Java 25+ dan Quarkus (versi sesuai BOM yang dipilih) |
 | C-02 | Database wajib PostgreSQL |
 | C-03 | Skema database dikelola Flyway; Hibernate memakai strategi `validate` |
 | C-04 | API memakai DTO; entity tidak diekspos |
@@ -2639,7 +2639,7 @@ Sistem dibangun menggunakan Quarkus sebagai backend framework, PostgreSQL sebaga
 
 | Teknologi | Fungsi |
 | --- | --- |
-| Java 21+ | Bahasa pemrograman |
+| Java 25+ | Bahasa pemrograman |
 | Quarkus | Backend framework |
 | RESTEasy Reactive / Quarkus REST | REST API |
 | Hibernate ORM with Panache | ORM dan akses database |
