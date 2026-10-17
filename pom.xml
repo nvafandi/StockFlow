@@ -70,6 +70,18 @@
             <artifactId>quarkus-smallrye-openapi</artifactId>
         </dependency>
 
+        <!-- Kafka (outbox publisher, FSD §10.2) -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-messaging-kafka</artifactId>
+        </dependency>
+
+        <!-- Scheduler (outbox publisher, FSD §10.3) -->
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-scheduler</artifactId>
+        </dependency>
+
         <!-- Boilerplate reduction for JPA entities (DTOs stay as records) -->
         <dependency>
             <groupId>org.projectlombok</groupId>

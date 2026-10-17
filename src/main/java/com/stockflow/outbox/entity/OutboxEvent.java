@@ -70,4 +70,7 @@ public class OutboxEvent extends PanacheEntityBase {
 
     @Column(name = "last_error", columnDefinition = "text")
     private String lastError;
+
+    @Column(name = "leased_at")
+    private OffsetDateTime leasedAt;
 }
