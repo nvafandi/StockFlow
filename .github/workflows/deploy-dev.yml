@@ -7,14 +7,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  # ---------------------------------------------------------------------------
+  # Build di GitHub-hosted runner (cepat, ada cache Maven).
+  # ---------------------------------------------------------------------------
+  build:
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
-    timeout-minutes: 30
-
-    env:
-      SERVER_IP: 172.24.97.230
-      SSH_USER: nurvan
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
@@ -30,52 +29,60 @@ jobs:
       - name: Build Quarkus application
         run: ./mvnw -B package -DskipTests
 
-      - name: Setup SSH key
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          KEY_PATH="$RUNNER_TEMP/stockflow_deploy_key"
-          umask 077
-          echo "$SSH_PRIVATE_KEY" > "$KEY_PATH"
-          chmod 600 "$KEY_PATH"
-          {
-            echo "SSH_KEY_PATH=$KEY_PATH"
-            echo "SSH_OPTIONS=-i $KEY_PATH -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15"
-          } >> "$GITHUB_ENV"
+      - name: Upload artifact deployment
+        uses: actions/upload-artifact@v4
+        with:
+          name: stockflow-deploy
+          path: |
+            target/*runner.jar
+            deployment/docker-compose.yml
+            deployment/config/application-dev-properties
+          retention-days: 3
 
-      - name: Siapkan direktori deployment di server
-        run: |
-          ssh $SSH_OPTIONS "$SSH_USER@$SERVER_IP" \
-            "mkdir -p /opt/stockflow/deployment/config"
+  # ---------------------------------------------------------------------------
+  # Deploy di self-hosted runner (di server dev sendiri, akses Docker lokal).
+  # Server dev hanya bisa dijangkau via ZeroTier, sehingga job ini tidak
+  # memakai SSH — semua operasi berjalan langsung di server.
+  # ---------------------------------------------------------------------------
+  deploy:
+    needs: build
+    runs-on: [self-hosted, stockflow]
+    timeout-minutes: 30
 
-      - name: SCP artifact & deployment ke server
+    steps:
+      - name: Download artifact deployment
+        uses: actions/download-artifact@v4
+        with:
+          name: stockflow-deploy
+          path: deploy-dist
+
+      - name: Susun berkas di /opt/stockflow
         run: |
-          LOCAL_JAR=$(ls -t target/*runner.jar 2>/dev/null | head -1)
-          if [ -z "$LOCAL_JAR" ]; then
-            LOCAL_JAR=$(ls -t target/*.jar | head -1)
-          fi
-          echo "Upload artifact: $LOCAL_JAR"
-          scp $SSH_OPTIONS "$LOCAL_JAR" "$SSH_USER@$SERVER_IP:/opt/stockflow/app.jar"
-          scp $SSH_OPTIONS deployment/docker-compose.yml "$SSH_USER@$SERVER_IP:/opt/stockflow/deployment/docker-compose.yml"
-          scp $SSH_OPTIONS deployment/config/application-dev-properties "$SSH_USER@$SERVER_IP:/opt/stockflow/deployment/config/application-dev-properties"
+          SRC="$GITHUB_WORKSPACE/deploy-dist"
+          mkdir -p /opt/stockflow/deployment/config
+          cp "$SRC"/*runner.jar /opt/stockflow/app.jar
+          cp "$SRC"/docker-compose.yml /opt/stockflow/deployment/docker-compose.yml
+          cp "$SRC"/application-dev-properties /opt/stockflow/deployment/config/application-dev-properties
+          ls -lh /opt/stockflow/app.jar /opt/stockflow/deployment/
 
       - name: Deploy stack via Docker Compose
         run: |
-          ssh $SSH_OPTIONS "$SSH_USER@$SERVER_IP" \
-            "cd /opt/stockflow/deployment && docker compose up -d --remove-orphans && docker compose restart app"
+          cd /opt/stockflow/deployment
+          docker compose up -d --remove-orphans
+          docker compose restart app
 
       - name: Verifikasi health endpoint
-        if: always()
         run: |
-          echo "Cek health endpoint di server..."
-          for i in {1..10}; do
-            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://172.24.97.230:8080/q/health || echo "000")
+          echo "Cek health endpoint..."
+          for i in $(seq 1 15); do
+            RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/q/health || echo "000")
             if [ "$RESPONSE" = "200" ]; then
               echo "Health check LULUS (HTTP 200)"
               exit 0
             fi
-            echo "Menunggu server start (percobaan $i/10, status: $RESPONSE)..."
+            echo "Menunggu server start (percobaan $i/15, status: $RESPONSE)..."
             sleep 10
           done
-          echo "Health check gagal setelah 10 percobaan"
+          echo "Health check gagal — log container:"
+          docker logs stockflow-service --tail 50 || true
           exit 1
