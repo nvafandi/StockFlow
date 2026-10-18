@@ -60,9 +60,9 @@ jobs:
         run: |
           SRC="$GITHUB_WORKSPACE/deploy-dist"
           mkdir -p /opt/stockflow/deployment/config
-          cp "$SRC"/*runner.jar /opt/stockflow/app.jar
-          cp "$SRC"/docker-compose.yml /opt/stockflow/deployment/docker-compose.yml
-          cp "$SRC"/application-dev-properties /opt/stockflow/deployment/config/application-dev-properties
+          cp "$SRC"/target/*runner.jar /opt/stockflow/app.jar
+          cp "$SRC"/deployment/docker-compose.yml /opt/stockflow/deployment/docker-compose.yml
+          cp "$SRC"/deployment/config/application-dev-properties /opt/stockflow/deployment/config/application-dev-properties
           ls -lh /opt/stockflow/app.jar /opt/stockflow/deployment/
 
       - name: Deploy stack via Docker Compose
