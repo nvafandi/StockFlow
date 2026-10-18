@@ -20,6 +20,9 @@
         <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
         <quarkus.platform.version>3.40.1</quarkus.platform.version>
 
+        <!-- Packaging uber-jar: satu file runner.jar agar mudah di-SCP ke server deployment -->
+        <quarkus.package.jar.type>uber-jar</quarkus.package.jar.type>
+
         <compiler-plugin.version>3.14.0</compiler-plugin.version>
         <surefire-plugin.version>3.5.2</surefire-plugin.version>
         <lombok.version>1.18.48</lombok.version>
