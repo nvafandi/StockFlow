@@ -1,0 +1,45 @@
+# Deployment Configuration - StockFlow Service
+# File ini dimuat saat deployment ke server (172.24.97.230)
+# Nilai dapat dioverride melalui environment variable di runtime.
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+# Gunakan environment variable di production: DB_JDBC_URL, DB_USERNAME, DB_PASSWORD
+# Default untuk development lokal jika belum di-set di env:
+%dev.quarkus.datasource.jdbc.url=${DB_JDBC_URL:jdbc:postgresql://localhost:5432/stockflow}
+%dev.quarkus.datasource.username=${DB_USERNAME:stockflow}
+%dev.quarkus.datasource.password=${DB_PASSWORD:stockflow}
+
+# ---------------------------------------------------------------------------
+# Kafka (FSD §10.2)
+# ---------------------------------------------------------------------------
+# Alamat broker Kafka — override lewat KAFKA_BOOTSTRAP_SERVERS di runtime
+kafka.bootstrap.servers=${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+# Channel Kafka outbox — konfigurasi microprofile reactive messaging
+mp.messaging.outgoing.stock-events.connector=smallrye-kafka
+mp.messaging.outgoing.stock-events.topic=stockflow.inventory.events.v1
+mp.messaging.outgoing.stock-events.key.serializer=org.apache.kafka.common.serialization.StringSerializer
+mp.messaging.outgoing.stock-events.value.serializer=org.apache.kafka.common.serialization.StringSerializer
+
+# ---------------------------------------------------------------------------
+# Outbox Publisher (FSD §10.3)
+# ---------------------------------------------------------------------------
+# Kill switch: dev=true, prod bisa dinonaktifkan lewat env
+outbox.publisher.enabled=${OUTBOX_PUBLISHER_ENABLED:true}
+outbox.publisher.poll-interval=1m
+outbox.publisher.page-size=50
+outbox.publisher.max-attempts=10
+outbox.publisher.lock-lease=30s
+
+# ---------------------------------------------------------------------------
+# Health & Observability
+# ---------------------------------------------------------------------------
+quarkus.smallrye-health.root-path=/q/health
+quarkus.micrometer.export.prometheus.enabled=true
+
+# ---------------------------------------------------------------------------
+# Aplikasi
+# ---------------------------------------------------------------------------
+quarkus.application.name=stockflow-service
