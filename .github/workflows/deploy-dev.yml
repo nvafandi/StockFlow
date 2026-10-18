@@ -14,7 +14,6 @@ jobs:
     env:
       SERVER_IP: 172.24.97.230
       SSH_USER: nurvan
-      SSH_KEY_PATH: ${{ runner.temp }}/stockflow_deploy_key
 
     steps:
       - name: Checkout repository
@@ -34,10 +33,14 @@ jobs:
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
+          KEY_PATH="$RUNNER_TEMP/stockflow_deploy_key"
           umask 077
-          echo "$SSH_PRIVATE_KEY" > "$SSH_KEY_PATH"
-          chmod 600 "$SSH_KEY_PATH"
-          echo "SSH_OPTIONS=-i $SSH_KEY_PATH -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15" >> "$GITHUB_ENV"
+          echo "$SSH_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          {
+            echo "SSH_KEY_PATH=$KEY_PATH"
+            echo "SSH_OPTIONS=-i $KEY_PATH -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15"
+          } >> "$GITHUB_ENV"
 
       - name: Siapkan direktori deployment di server
         run: |
