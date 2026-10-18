@@ -29,37 +29,38 @@ jobs:
       - name: Build Quarkus application
         run: ./mvnw -B package -DskipTests
 
-      - name: Install sshpass
+      - name: Setup SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
-          if ! command -v sshpass &>/dev/null; then
-            sudo apt-get update && sudo apt-get install -y sshpass
-          fi
+          KEY_PATH="$RUNNER_TEMP/stockflow_deploy_key"
+          umask 077
+          echo "$SSH_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          {
+            echo "SSH_KEY_PATH=$KEY_PATH"
+            echo "SSH_OPTIONS=-i $KEY_PATH -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o ConnectTimeout=15"
+          } >> "$GITHUB_ENV"
 
       - name: Siapkan direktori deployment di server
-        env:
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no "$SSH_USER@$SERVER_IP" \
+          ssh $SSH_OPTIONS "$SSH_USER@$SERVER_IP" \
             "mkdir -p /opt/stockflow/deployment/config"
 
       - name: SCP artifact & deployment ke server
-        env:
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
           LOCAL_JAR=$(ls -t target/*runner.jar 2>/dev/null | head -1)
           if [ -z "$LOCAL_JAR" ]; then
             LOCAL_JAR=$(ls -t target/*.jar | head -1)
           fi
           echo "Upload artifact: $LOCAL_JAR"
-          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no "$LOCAL_JAR" "$SSH_USER@$SERVER_IP:/opt/stockflow/app.jar"
-          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no deployment/docker-compose.yml "$SSH_USER@$SERVER_IP:/opt/stockflow/deployment/docker-compose.yml"
-          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no deployment/config/application-dev-properties "$SSH_USER@$SERVER_IP:/opt/stockflow/deployment/config/application-dev-properties"
+          scp $SSH_OPTIONS "$LOCAL_JAR" "$SSH_USER@$SERVER_IP:/opt/stockflow/app.jar"
+          scp $SSH_OPTIONS deployment/docker-compose.yml "$SSH_USER@$SERVER_IP:/opt/stockflow/deployment/docker-compose.yml"
+          scp $SSH_OPTIONS deployment/config/application-dev-properties "$SSH_USER@$SERVER_IP:/opt/stockflow/deployment/config/application-dev-properties"
 
       - name: Deploy stack via Docker Compose
-        env:
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no "$SSH_USER@$SERVER_IP" \
+          ssh $SSH_OPTIONS "$SSH_USER@$SERVER_IP" \
             "cd /opt/stockflow/deployment && docker compose up -d --remove-orphans && docker compose restart app"
 
       - name: Verifikasi health endpoint
