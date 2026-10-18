@@ -35,7 +35,14 @@ jobs:
             sudo apt-get update && sudo apt-get install -y sshpass
           fi
 
-      - name: SCP artifact ke server
+      - name: Siapkan direktori deployment di server
+        env:
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no "$SSH_USER@$SERVER_IP" \
+            "mkdir -p /opt/stockflow/deployment/config"
+
+      - name: SCP artifact & deployment ke server
         env:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
@@ -45,33 +52,15 @@ jobs:
           fi
           echo "Upload artifact: $LOCAL_JAR"
           sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no "$LOCAL_JAR" "$SSH_USER@$SERVER_IP:/opt/stockflow/app.jar"
-
-      - name: Upload config deployment ke server
-        env:
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
-        run: |
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no "$SSH_USER@$SERVER_IP" "mkdir -p /opt/stockflow/deployment/config"
+          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no deployment/docker-compose.yml "$SSH_USER@$SERVER_IP:/opt/stockflow/deployment/docker-compose.yml"
           sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no deployment/config/application-dev-properties "$SSH_USER@$SERVER_IP:/opt/stockflow/deployment/config/application-dev-properties"
 
-      - name: Restart container Docker
+      - name: Deploy stack via Docker Compose
         env:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no "$SSH_USER@$SERVER_IP" 'bash -s' << 'REMOTE_EOF'
-            docker stop stockflow-service 2>/dev/null || true
-            docker rm stockflow-service 2>/dev/null || true
-            docker run -d \
-              --name stockflow-service \
-              --restart unless-stopped \
-              -p 8080:8080 \
-              -v /opt/stockflow/deployment/config/application-dev-properties:/application.properties:ro \
-              -v stockflow-data:/data \
-              -e QUARKUS_CONFIG_LOCATIONS=/application.properties \
-              -e DB_JDBC_URL=jdbc:postgresql://host.docker.internal:5432/stockflow \
-              -e KAFKA_BOOTSTRAP_SERVERS=host.docker.internal:9092 \
-              -e JAVA_OPTS="-Xmx512m" \
-              /opt/stockflow/app.jar || echo "Gagal memulai container, cek log di server"
-          REMOTE_EOF
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no "$SSH_USER@$SERVER_IP" \
+            "cd /opt/stockflow/deployment && docker compose up -d --remove-orphans && docker compose restart app"
 
       - name: Verifikasi health endpoint
         if: always()
